@@ -1,9 +1,12 @@
-import { isZipFile } from './takeout';
+import { isZipName } from './takeout';
 import type { Mode, Row } from './dataset';
 
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const GAPI_SRC = 'https://apis.google.com/js/api.js';
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const DRIVE_SCOPE = [
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/drive.readonly',
+].join(' ');
 const ZIP_MIME =
   'application/zip,application/x-zip-compressed,application/x-zip,application/octet-stream';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
@@ -43,11 +46,13 @@ type GoogleApis = {
   picker: {
     Action: { PICKED: string; CANCEL: string };
     Feature: { MULTISELECT_ENABLED: string };
-    ViewId: { DOCS: string };
+    ViewId: { DOCS: string; FOLDERS?: string };
+    DocsViewMode?: { LIST: string };
     DocsView: new (viewId?: string) => {
       setMimeTypes: (types: string) => unknown;
       setIncludeFolders: (include: boolean) => unknown;
       setSelectFolderEnabled: (enabled: boolean) => unknown;
+      setMode?: (mode: unknown) => unknown;
     };
     PickerBuilder: new () => PickerBuilder;
   };
@@ -159,19 +164,42 @@ function requestAccessToken(google: GoogleApis): Promise<string> {
   });
 }
 
+function isDriveFolder(doc: DriveDoc): boolean {
+  return doc.mimeType === FOLDER_MIME || (!doc.mimeType && !isZipName(doc.name));
+}
+
+function configureDocsView(
+  view: InstanceType<GoogleApis['picker']['DocsView']>,
+  google: GoogleApis,
+): void {
+  if (view.setMode && google.picker.DocsViewMode?.LIST) {
+    view.setMode(google.picker.DocsViewMode.LIST);
+  }
+}
+
 function pickDocs(google: GoogleApis, token: string): Promise<DriveDoc[]> {
   return new Promise((resolve, reject) => {
-    const view = new google.picker.DocsView(google.picker.ViewId.DOCS);
-    view.setMimeTypes(`${ZIP_MIME},${FOLDER_MIME}`);
-    view.setIncludeFolders(true);
-    view.setSelectFolderEnabled(true);
+    const folders = new google.picker.DocsView(
+      google.picker.ViewId.FOLDERS || google.picker.ViewId.DOCS,
+    );
+    folders.setIncludeFolders(true);
+    folders.setSelectFolderEnabled(true);
+    configureDocsView(folders, google);
+
+    const zips = new google.picker.DocsView(google.picker.ViewId.DOCS);
+    zips.setMimeTypes(`${ZIP_MIME},${FOLDER_MIME}`);
+    zips.setIncludeFolders(true);
+    zips.setSelectFolderEnabled(true);
+    configureDocsView(zips, google);
+
     const picker = new google.picker.PickerBuilder()
-      .addView(view)
+      .addView(folders)
+      .addView(zips)
       .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
       .setOAuthToken(token)
       .setDeveloperKey(apiKey())
       .setAppId(appId())
-      .setTitle('Select Google Takeout ZIP files')
+      .setTitle('Select your Takeout folder')
       .setCallback((data) => {
         if (data.action === google.picker.Action.CANCEL) {
           resolve([]);
@@ -218,8 +246,9 @@ async function listFolderZips(folderId: string, token: string): Promise<DriveDoc
         zips.push(...(await listFolderZips(file.id, token)));
         continue;
       }
-      const fake = new File([], file.name, { type: file.mimeType });
-      if (isZipFile(fake)) zips.push(file);
+      if (isZipName(file.name) || (file.mimeType && ZIP_MIME.includes(file.mimeType))) {
+        zips.push(file);
+      }
     }
     pageToken = body.nextPageToken ?? '';
   } while (pageToken);
@@ -230,12 +259,11 @@ async function resolveZipDocs(docs: DriveDoc[], token: string): Promise<DriveDoc
   const zips: DriveDoc[] = [];
   const seen = new Set<string>();
   for (const doc of docs) {
-    const found =
-      doc.mimeType === FOLDER_MIME
-        ? await listFolderZips(doc.id, token)
-        : isZipFile(new File([], doc.name, { type: doc.mimeType }))
-          ? [doc]
-          : [];
+    const found = isDriveFolder(doc)
+      ? await listFolderZips(doc.id, token)
+      : isZipName(doc.name)
+        ? [doc]
+        : await listFolderZips(doc.id, token);
     for (const zip of found) {
       if (seen.has(zip.id)) continue;
       seen.add(zip.id);
@@ -254,7 +282,7 @@ function decodeBase64(value: string): Uint8Array {
 
 export async function pickDriveTakeoutZips(
   progress: (update: DriveProgress) => void = () => undefined,
-): Promise<{ token: string; files: DriveZipRef[] }> {
+): Promise<{ token: string; files: DriveZipRef[]; folders: DriveZipRef[] }> {
   if (!isDriveConfigured()) {
     throw new Error('Google Drive is not configured for this site.');
   }
@@ -262,21 +290,40 @@ export async function pickDriveTakeoutZips(
   const google = await loadGoogleLibraries();
   const token = await requestAccessToken(google);
   const picked = await pickDocs(google, token);
-  if (!picked.length) return { token, files: [] };
-  progress({ phase: 'Finding Takeout ZIP files…', completed: 0, total: 1 });
-  const zips = await resolveZipDocs(picked, token);
-  if (!zips.length) {
-    throw new Error('No Takeout ZIP files were selected. Choose takeout-*.zip, or a folder that contains them.');
+  if (!picked.length) return { token, files: [], folders: [] };
+  const folders = picked
+    .filter((doc) => isDriveFolder(doc) || !isZipName(doc.name))
+    .map((doc) => ({ id: doc.id, name: doc.name }));
+  progress({
+    phase: folders.length
+      ? `Looking for ZIP files in ${folders.map((folder) => folder.name).join(', ')}…`
+      : 'Finding Takeout ZIP files…',
+    completed: 0,
+    total: 1,
+  });
+  let zips: DriveDoc[] = [];
+  try {
+    zips = await resolveZipDocs(picked, token);
+  } catch {
+    if (!folders.length) {
+      throw new Error('Could not list ZIP files in that Drive folder.');
+    }
+  }
+  if (!zips.length && !folders.length) {
+    throw new Error(
+      'No Takeout ZIP files were selected. Choose the Takeout folder in Drive, or every takeout-*.zip part.',
+    );
   }
   return {
     token,
     files: zips.map((zip) => ({ id: zip.id, name: zip.name })),
+    folders,
   };
 }
 
 export async function extractDriveZipsRemote(
   token: string,
-  files: DriveZipRef[],
+  selection: { files: DriveZipRef[]; folders?: DriveZipRef[] },
   mode: Mode,
   source: string,
   progress: (update: DriveProgress) => void = () => undefined,
@@ -286,14 +333,26 @@ export async function extractDriveZipsRemote(
   if (!api) {
     throw new Error('Drive extraction is not configured for this site.');
   }
-  progress({ phase: 'Starting cloud extraction…', completed: 0, total: files.length || 1 });
+  const fileCount = selection.files.length;
+  progress({
+    phase: selection.folders?.length
+      ? 'Reading the Takeout folder in Drive…'
+      : 'Starting cloud extraction…',
+    completed: 0,
+    total: fileCount || 1,
+  });
   const response = await fetch(`${api}/extract`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ files, mode, source }),
+    body: JSON.stringify({
+      files: selection.files,
+      folders: selection.folders ?? [],
+      mode,
+      source,
+    }),
     signal,
   });
   if (!response.ok) {

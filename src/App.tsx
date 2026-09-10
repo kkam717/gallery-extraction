@@ -243,7 +243,7 @@ export default function App() {
     try {
       const picked = await pickDriveTakeoutZips(setProgress);
       if (id !== ingestId.current) return;
-      if (!picked.files.length) {
+      if (!picked.files.length && !picked.folders.length) {
         setCloudRun(false);
         setProgress(null);
         return;
@@ -251,7 +251,7 @@ export default function App() {
       setSource('google');
       const extracted = await extractDriveZipsRemote(
         picked.token,
-        picked.files,
+        { files: picked.files, folders: picked.folders },
         mode,
         'google',
         setProgress,
@@ -435,14 +435,15 @@ export default function App() {
                         onClick={() => void loadDriveZips()}
                         disabled={!!progress}
                         type="button"
-                        title="Choose Takeout ZIP files directly from Google Drive"
+                        title="Select the Takeout folder in Google Drive"
                       >
                         <Cloud size={16} /> From Google Drive
                       </button>
                     </div>
                     <span className="subtle">
-                      Local photos stay in this browser. From Google Drive reads
-                      Takeout ZIPs in the cloud so they are not downloaded here.
+                      Local photos stay in this browser. From Google Drive, select
+                      the Takeout folder — every ZIP part inside is processed in
+                      the cloud.
                     </span>
                   </div>
 
@@ -678,11 +679,12 @@ export default function App() {
                 <p>
                   <strong>Google:</strong> export Google Photos through Takeout
                   and save the archives to Drive. Then use{' '}
-                  <strong>From Google Drive</strong> to process them in the
-                  cloud, or download the ZIPs and use{' '}
-                  <strong>Takeout ZIP(s)</strong>. Select every{' '}
-                  <code>takeout-*.zip</code> part. You can still unzip locally
-                  and choose the folder. Keep the JSON sidecar files.
+                  <strong>From Google Drive</strong> and select the{' '}
+                  <strong>Takeout</strong> folder. Every{' '}
+                  <code>takeout-*.zip</code> part inside is processed together.
+                  You can still download the ZIPs and use{' '}
+                  <strong>Takeout ZIP(s)</strong>, or unzip locally and choose
+                  the folder. Keep the JSON sidecar files.
                 </p>
                 <p>
                   <strong>Apple:</strong> in Photos on Mac, select photos → File

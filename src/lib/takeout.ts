@@ -23,13 +23,13 @@ export function normalizeZipPath(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//, '');
 }
 
+export function isZipName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.endsWith('.zip') || lower.endsWith('.zip.001') || /\.zip\.\d{3}$/.test(lower);
+}
+
 export function isZipFile(file: File): boolean {
-  const name = file.name.toLowerCase();
-  return (
-    ZIP_TYPES.has(file.type) ||
-    name.endsWith('.zip') ||
-    name.endsWith('.zip.001')
-  );
+  return ZIP_TYPES.has(file.type) || isZipName(file.name);
 }
 
 export function isTakeoutEntry(path: string): boolean {

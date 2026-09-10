@@ -23,6 +23,7 @@ function zipFile(entries: Record<string, Uint8Array>, name = 'takeout-001.zip'):
 describe('takeout zip helpers', () => {
   it('recognizes zip names and normalizes archive paths', () => {
     expect(isZipFile(new File([], 'takeout-20260101T000000Z-002.zip'))).toBe(true);
+    expect(isZipFile(new File([], 'takeout-20260101T000000Z-1-001.zip'))).toBe(true);
     expect(isZipFile(new File([], 'sunset.jpg'))).toBe(false);
     expect(normalizeZipPath('.\\Takeout\\Google Photos\\a.jpg')).toBe(
       'Takeout/Google Photos/a.jpg',
