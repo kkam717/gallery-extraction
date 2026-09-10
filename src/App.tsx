@@ -33,7 +33,7 @@ import {
   type Mode,
   type Row,
 } from '@/lib/dataset';
-import { isDriveConfigured, pickTakeoutZipsFromDrive } from '@/lib/drive';
+import { pickTakeoutZipsFromDrive } from '@/lib/drive';
 import { filesFromTakeoutZips, isZipFile } from '@/lib/takeout';
 
 type WorkerProgress = { phase: string; completed: number; total: number };
@@ -400,17 +400,10 @@ export default function App() {
                       </button>
                       <button
                         className="secondary"
-                        onClick={() => {
-                          if (isDriveConfigured()) void loadDriveZips();
-                          else zipInput.current?.click();
-                        }}
+                        onClick={() => void loadDriveZips()}
                         disabled={!!progress}
                         type="button"
-                        title={
-                          isDriveConfigured()
-                            ? 'Download Takeout ZIP files from your Google Drive into this browser'
-                            : 'Select Takeout ZIP files you downloaded from Google Drive'
-                        }
+                        title="Choose Takeout ZIP files directly from Google Drive"
                       >
                         <Cloud size={16} /> From Google Drive
                       </button>
