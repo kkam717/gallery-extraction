@@ -2,15 +2,23 @@ import { parseMetadata, dispose } from '@uswriting/exiftool';
 import initSqlJs from 'sql.js';
 import { zipSync, strToU8 } from 'fflate';
 
-function runtimeAsset(path: string): string {
+function siteOrigin(): string | null {
+  return typeof location === 'undefined' ? null : `${location.origin}/`;
+}
+
+export function runtimeAsset(path: string): string {
   const base = import.meta.env.BASE_URL ?? '/';
   const prefix = base.endsWith('/') ? base : `${base}/`;
-  return `${prefix}${path.replace(/^\//, '')}`;
+  const relative = `${prefix}${path.replace(/^\//, '')}`;
+  const origin = siteOrigin();
+  return origin ? new URL(relative, origin).href : relative;
 }
 
 /**
  * Zeroperl only uses the provided `fetch` when `window` and `document` exist.
  * Dedicated workers have neither, so it tries `node:fs/promises` and crashes.
+ * Point document.baseURI at the app origin so relative WASM URLs do not resolve
+ * against the worker script path under /assets/.
  */
 function useBrowserWasmLoader() {
   const scope = globalThis as unknown as {
@@ -21,8 +29,11 @@ function useBrowserWasmLoader() {
   if (!scope.WorkerGlobalScope || !(globalThis instanceof scope.WorkerGlobalScope)) {
     return;
   }
+  const origin = siteOrigin() ?? 'http://localhost/';
   scope.window ??= scope;
-  scope.document ??= { baseURI: location.href };
+  scope.document ??= {
+    baseURI: new URL(import.meta.env.BASE_URL || '/', origin).href,
+  };
 }
 export type Mode = 'full' | 'limited';
 export type InputFile = { file: File; path: string };

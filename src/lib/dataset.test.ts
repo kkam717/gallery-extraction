@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { unzipSync, strFromU8 } from 'fflate';
 import initSqlJs from 'sql.js';
 import { describe, expect, it } from 'vitest';
-import { createDataset, csvCell, getTag, makeRow } from './dataset';
+import { createDataset, csvCell, getTag, makeRow, runtimeAsset } from './dataset';
 
 const tinyJpeg = Uint8Array.from(
   Buffer.from(
@@ -16,6 +16,11 @@ describe('dataset helpers', () => {
   it('prefers signed composite GPS and protects CSV cells', () => {
     expect(getTag({ 'EXIF:GPSLongitude': 0.12, 'Composite:GPSLongitude': -0.12 }, ['GPSLongitude'])).toBe(-0.12);
     expect(csvCell('=HYPERLINK("bad")')).toContain("'=HYPERLINK");
+  });
+
+  it('resolves runtime assets under the configured base path', () => {
+    expect(runtimeAsset('runtime/sql-wasm.wasm')).toMatch(/runtime\/sql-wasm\.wasm$/);
+    expect(runtimeAsset('runtime/zeroperl.wasm')).toMatch(/runtime\/zeroperl\.wasm$/);
   });
 
   it('removes identifying fields in limited rows', () => {
