@@ -7,6 +7,23 @@ function runtimeAsset(path: string): string {
   const prefix = base.endsWith('/') ? base : `${base}/`;
   return `${prefix}${path.replace(/^\//, '')}`;
 }
+
+/**
+ * Zeroperl only uses the provided `fetch` when `window` and `document` exist.
+ * Dedicated workers have neither, so it tries `node:fs/promises` and crashes.
+ */
+function useBrowserWasmLoader() {
+  const scope = globalThis as unknown as {
+    window?: unknown;
+    document?: unknown;
+    WorkerGlobalScope?: new () => object;
+  };
+  if (!scope.WorkerGlobalScope || !(globalThis instanceof scope.WorkerGlobalScope)) {
+    return;
+  }
+  scope.window ??= scope;
+  scope.document ??= { baseURI: location.href };
+}
 export type Mode = 'full' | 'limited';
 export type InputFile = { file: File; path: string };
 export type Row = Record<string, string | number | null>;
@@ -178,6 +195,7 @@ export async function createDataset(
   runtimeFetch = () => fetch(runtimeAsset('runtime/zeroperl.wasm')),
   sqliteLocate = (name: string) => runtimeAsset(`runtime/${name}`),
 ): Promise<Result> {
+  useBrowserWasmLoader();
   const media = files.filter(isMedia),
     sidecarFiles = files.filter(isSidecar);
   if (!media.length)

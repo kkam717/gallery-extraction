@@ -1,4 +1,5 @@
 import { createDataset, type InputFile, type Mode } from './dataset';
+
 self.onmessage = async (
   event: MessageEvent<{ files: InputFile[]; mode: Mode; source: string }>,
 ) => {
