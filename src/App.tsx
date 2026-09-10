@@ -94,6 +94,39 @@ export default function App() {
     setProgress(null);
   }
 
+  async function loadSample() {
+    try {
+      const base = import.meta.env.BASE_URL.endsWith('/')
+        ? import.meta.env.BASE_URL
+        : `${import.meta.env.BASE_URL}/`;
+      const [photoRes, sidecarRes] = await Promise.all([
+        fetch(`${base}samples/sunset.jpg`),
+        fetch(`${base}samples/sunset.jpg.supplemental-metadata.json`),
+      ]);
+      if (!photoRes.ok || !sidecarRes.ok) {
+        throw new Error('The sample photo could not be loaded.');
+      }
+      const [photoBuf, sidecarText] = await Promise.all([
+        photoRes.arrayBuffer(),
+        sidecarRes.text(),
+      ]);
+      selectFiles([
+        {
+          file: new File([photoBuf], 'sunset.jpg', { type: 'image/jpeg' }),
+          path: 'sample/sunset.jpg',
+        },
+        {
+          file: new File([sidecarText], 'sunset.jpg.supplemental-metadata.json', {
+            type: 'application/json',
+          }),
+          path: 'sample/sunset.jpg.supplemental-metadata.json',
+        },
+      ]);
+    } catch {
+      setError('The sample photo could not be loaded. Try choosing your own files.');
+    }
+  }
+
   function extract() {
     if (!counts.media || progress) return;
     setError(null);
@@ -272,6 +305,14 @@ export default function App() {
                         type="button"
                       >
                         <Images size={16} /> Choose photos
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => void loadSample()}
+                        disabled={!!progress}
+                        type="button"
+                      >
+                        Try a sample
                       </button>
                     </div>
                     <span className="subtle">
