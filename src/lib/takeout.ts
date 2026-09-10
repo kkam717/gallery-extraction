@@ -65,13 +65,30 @@ function keepLimit(path: string): number {
   return ext === 'json' || ext === 'xmp' ? SIDECAR_BYTES : HEADER_BYTES;
 }
 
-async function unpackZip(
-  zip: File,
-  progress: (update: UnpackProgress) => void,
-  zipIndex: number,
-  zipTotal: number,
+async function* fileChunks(file: File): AsyncIterable<Uint8Array> {
+  if (typeof file.stream === 'function') {
+    const reader = file.stream().getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) yield value;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return;
+  }
+  yield new Uint8Array(await file.arrayBuffer());
+}
+
+export async function filesFromTakeoutZipChunks(
+  zipName: string,
+  chunks: AsyncIterable<Uint8Array>,
+  progress: (update: UnpackProgress) => void = () => undefined,
+  zipIndex = 1,
+  zipTotal = 1,
 ): Promise<InputFile[]> {
-  const buffer = new Uint8Array(await zip.arrayBuffer());
   const files: InputFile[] = [];
   await new Promise<void>((resolve, reject) => {
     let pending = 0;
@@ -89,7 +106,7 @@ async function unpackZip(
       const path = normalizeZipPath(entry.name);
       if (!isTakeoutEntry(path)) return;
       pending += 1;
-      const chunks: Uint8Array[] = [];
+      const parts: Uint8Array[] = [];
       let received = 0;
       const limit = keepLimit(path);
       let settled = false;
@@ -98,9 +115,9 @@ async function unpackZip(
         settled = true;
         const bytes = new Uint8Array(received);
         let offset = 0;
-        for (const chunk of chunks) {
-          bytes.set(chunk, offset);
-          offset += chunk.length;
+        for (const part of parts) {
+          bytes.set(part, offset);
+          offset += part.length;
         }
         files.push({
           file: new File([bytes], fileName(path), { type: mimeFor(path) }),
@@ -108,7 +125,7 @@ async function unpackZip(
         });
         pending -= 1;
         progress({
-          phase: `Unpacking ${zip.name}…`,
+          phase: `Unpacking ${zipName}…`,
           completed: zipIndex,
           total: zipTotal,
         });
@@ -122,7 +139,7 @@ async function unpackZip(
         if (received < limit) {
           const take =
             chunk.length > limit - received ? chunk.subarray(0, limit - received) : chunk;
-          chunks.push(take);
+          parts.push(take);
           received += take.length;
           if (received >= limit && entry.terminate) {
             entry.terminate();
@@ -134,20 +151,28 @@ async function unpackZip(
       };
       entry.start();
     };
-    const chunkSize = 1024 * 1024;
     const push = async () => {
-      for (let offset = 0; offset < buffer.length; offset += chunkSize) {
-        unzipper.push(
-          buffer.subarray(offset, offset + chunkSize),
-          offset + chunkSize >= buffer.length,
-        );
-        if (offset > 0 && offset % (8 * chunkSize) === 0) await yieldThread();
+      let seen = 0;
+      for await (const chunk of chunks) {
+        unzipper.push(chunk, false);
+        seen += chunk.byteLength;
+        if (seen > 0 && seen % (8 * 1024 * 1024) < chunk.byteLength) await yieldThread();
       }
+      unzipper.push(new Uint8Array(0), true);
       finish();
     };
     void push().catch(reject);
   });
   return files;
+}
+
+async function unpackZip(
+  zip: File,
+  progress: (update: UnpackProgress) => void,
+  zipIndex: number,
+  zipTotal: number,
+): Promise<InputFile[]> {
+  return filesFromTakeoutZipChunks(zip.name, fileChunks(zip), progress, zipIndex, zipTotal);
 }
 
 export async function filesFromTakeoutZips(

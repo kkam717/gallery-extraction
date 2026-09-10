@@ -2,6 +2,7 @@ import { zipSync, strToU8 } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { HEADER_BYTES } from './exif';
 import {
+  filesFromTakeoutZipChunks,
   filesFromTakeoutZips,
   isTakeoutEntry,
   isZipFile,
@@ -66,5 +67,19 @@ describe('takeout zip helpers', () => {
     ]);
     expect(files).toHaveLength(1);
     expect(files[0].file.size).toBe(HEADER_BYTES);
+  });
+
+  it('unpacks a ZIP from streamed chunks without buffering the archive first', async () => {
+    const zip = zipFile({
+      'Takeout/Google Photos/Trip/streamed.jpg': tinyJpeg,
+    });
+    const bytes = new Uint8Array(await zip.arrayBuffer());
+    async function* chunks() {
+      yield bytes.subarray(0, 32);
+      yield bytes.subarray(32);
+    }
+    const files = await filesFromTakeoutZipChunks(zip.name, chunks());
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('Takeout/Google Photos/Trip/streamed.jpg');
   });
 });

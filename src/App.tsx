@@ -33,7 +33,7 @@ import {
   type Mode,
   type Row,
 } from '@/lib/dataset';
-import { pickTakeoutZipsFromDrive } from '@/lib/drive';
+import { extractDriveZipsRemote, pickDriveTakeoutZips } from '@/lib/drive';
 import { filesFromTakeoutZips, isZipFile } from '@/lib/takeout';
 
 type WorkerProgress = { phase: string; completed: number; total: number };
@@ -76,6 +76,8 @@ export default function App() {
   const zipInput = useRef<HTMLInputElement>(null);
   const worker = useRef<Worker | null>(null);
   const ingestId = useRef(0);
+  const ingestAbort = useRef<AbortController | null>(null);
+  const [cloudRun, setCloudRun] = useState(false);
   const [files, setFiles] = useState<InputFile[]>([]);
   const [mode, setMode] = useState<Mode>('full');
   const [source, setSource] = useState('mixed');
@@ -98,6 +100,7 @@ export default function App() {
     setError(null);
     setResult(null);
     setProgress(null);
+    setCloudRun(false);
   }
 
   async function ingestFiles(selected: InputFile[]) {
@@ -171,6 +174,7 @@ export default function App() {
     if (!counts.media || progress) return;
     setError(null);
     setResult(null);
+    setCloudRun(false);
     setProgress({
       phase: 'Starting…',
       completed: 0,
@@ -213,12 +217,15 @@ export default function App() {
 
   function reset() {
     ingestId.current += 1;
+    ingestAbort.current?.abort();
+    ingestAbort.current = null;
     worker.current?.terminate();
     worker.current = null;
     setFiles([]);
     setResult(null);
     setProgress(null);
     setError(null);
+    setCloudRun(false);
     if (folderInput.current) folderInput.current.value = '';
     if (fileInput.current) fileInput.current.value = '';
     if (zipInput.current) zipInput.current.value = '';
@@ -226,19 +233,38 @@ export default function App() {
 
   async function loadDriveZips() {
     const id = ++ingestId.current;
+    ingestAbort.current?.abort();
+    const controller = new AbortController();
+    ingestAbort.current = controller;
     setError(null);
     setResult(null);
+    setCloudRun(true);
     setProgress({ phase: 'Opening Google Drive…', completed: 0, total: 1 });
     try {
-      const zips = await pickTakeoutZipsFromDrive(setProgress);
+      const picked = await pickDriveTakeoutZips(setProgress);
       if (id !== ingestId.current) return;
-      if (!zips.length) {
+      if (!picked.files.length) {
+        setCloudRun(false);
         setProgress(null);
         return;
       }
-      await ingestFiles(zips.map((file) => ({ file, path: file.name })));
+      setSource('google');
+      const extracted = await extractDriveZipsRemote(
+        picked.token,
+        picked.files,
+        mode,
+        'google',
+        setProgress,
+        controller.signal,
+      );
+      if (id !== ingestId.current) return;
+      setFiles([]);
+      setResult(extracted);
+      setProgress(null);
     } catch (caught) {
       if (id !== ingestId.current) return;
+      if (controller.signal.aborted) return;
+      setCloudRun(false);
       setProgress(null);
       setError(
         caught instanceof Error
@@ -265,7 +291,11 @@ export default function App() {
         </div>
         <div className="local">
           <ShieldCheck size={17} />
-          <span>Processed on your computer</span>
+          <span>
+            {cloudRun
+              ? 'Drive files stay in Google Drive'
+              : 'Processed on your computer'}
+          </span>
         </div>
       </header>
 
@@ -276,7 +306,9 @@ export default function App() {
             <h1>Your gallery, in data.</h1>
             <p>
               Extract EXIF and sidecar metadata from photos, an Apple or Google
-              export folder, or Google Takeout ZIP files. Nothing is uploaded.
+              export folder, or Google Takeout ZIP files. Local files stay in
+              this browser. Drive archives are read in the cloud, not downloaded
+              here.
             </p>
           </div>
           <div className="steps" aria-label="Three-step process">
@@ -409,7 +441,8 @@ export default function App() {
                       </button>
                     </div>
                     <span className="subtle">
-                      Photos stay in this browser. Drive ZIPs are downloaded here, not to our servers.
+                      Local photos stay in this browser. From Google Drive reads
+                      Takeout ZIPs in the cloud so they are not downloaded here.
                     </span>
                   </div>
 
@@ -487,8 +520,10 @@ export default function App() {
                         <span className="progress-value">{percent}%</span>
                       </Progress>
                       <p className="notice">
-                        Keep this tab open. Only file headers are read, so a
-                        full library can run in this tab.
+                        Keep this tab open. Only file headers are read.
+                        {cloudRun
+                          ? ' Drive archives are processed in the cloud.'
+                          : ' A full local library can run in this tab.'}
                       </p>
                     </div>
                   )}
@@ -569,7 +604,9 @@ export default function App() {
 
             <div className="actionbar">
               <span className="subtle">
-                No installations. No photo uploads.
+                {cloudRun
+                  ? 'Drive ZIPs are not downloaded to this computer.'
+                  : 'No installations. Local files are not uploaded.'}
               </span>
               {result ? (
                 <button
@@ -641,8 +678,9 @@ export default function App() {
                 <p>
                   <strong>Google:</strong> export Google Photos through Takeout
                   and save the archives to Drive. Then use{' '}
-                  <strong>From Google Drive</strong> or{' '}
-                  <strong>Takeout ZIP(s)</strong> and select every{' '}
+                  <strong>From Google Drive</strong> to process them in the
+                  cloud, or download the ZIPs and use{' '}
+                  <strong>Takeout ZIP(s)</strong>. Select every{' '}
                   <code>takeout-*.zip</code> part. You can still unzip locally
                   and choose the folder. Keep the JSON sidecar files.
                 </p>
@@ -668,7 +706,11 @@ export default function App() {
         </div>
         <footer className="footer">
           <span>Built for Apple Photos & Google Takeout exports</span>
-          <span>Local extraction · No account connection</span>
+          <span>
+            {cloudRun
+              ? 'Cloud Drive extraction · files stay in Drive'
+              : 'Local extraction · files stay on this computer'}
+          </span>
         </footer>
       </main>
     </>

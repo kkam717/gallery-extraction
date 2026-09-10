@@ -1,4 +1,5 @@
 import { isZipFile } from './takeout';
+import type { Mode, Row } from './dataset';
 
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const GAPI_SRC = 'https://apis.google.com/js/api.js';
@@ -69,6 +70,17 @@ export type DriveProgress = {
   total: number;
 };
 
+export type DriveZipRef = {
+  id: string;
+  name: string;
+};
+
+export type DriveExtractResult = {
+  archive: Uint8Array;
+  rows: Row[];
+  manifest: Record<string, unknown>;
+};
+
 function clientId(): string {
   return import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() || '';
 }
@@ -83,8 +95,12 @@ function appId(): string {
   return clientId().split('-')[0] || '';
 }
 
+export function extractApiUrl(): string {
+  return import.meta.env.VITE_EXTRACT_API_URL?.trim().replace(/\/$/, '') || '';
+}
+
 export function isDriveConfigured(): boolean {
-  return Boolean(clientId() && apiKey());
+  return Boolean(clientId() && apiKey() && extractApiUrl());
 }
 
 function loadScript(src: string): Promise<void> {
@@ -229,46 +245,16 @@ async function resolveZipDocs(docs: DriveDoc[], token: string): Promise<DriveDoc
   return zips;
 }
 
-async function downloadDriveFile(
-  doc: DriveDoc,
-  token: string,
-  progress: (update: DriveProgress) => void,
-  fileIndex: number,
-  fileTotal: number,
-): Promise<File> {
-  const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(doc.id)}?alt=media`,
-    { headers: { Authorization: `Bearer ${token}` } },
-  );
-  if (!response.ok) {
-    throw new Error(`Could not download ${doc.name} from Google Drive.`);
-  }
-  const total = Number(response.headers.get('Content-Length') || doc.sizeBytes || 0);
-  if (!response.body) {
-    return new File([await response.blob()], doc.name, { type: 'application/zip' });
-  }
-  const reader = response.body.getReader();
-  const chunks: BlobPart[] = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const copy = new Uint8Array(value.byteLength);
-    copy.set(value);
-    chunks.push(copy);
-    received += copy.byteLength;
-    progress({
-      phase: `Downloading ${doc.name}…`,
-      completed: total ? Math.min(fileIndex - 1 + received / total, fileTotal) : fileIndex - 1,
-      total: fileTotal,
-    });
-  }
-  return new File(chunks, doc.name, { type: 'application/zip' });
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
-export async function pickTakeoutZipsFromDrive(
+export async function pickDriveTakeoutZips(
   progress: (update: DriveProgress) => void = () => undefined,
-): Promise<File[]> {
+): Promise<{ token: string; files: DriveZipRef[] }> {
   if (!isDriveConfigured()) {
     throw new Error('Google Drive is not configured for this site.');
   }
@@ -276,14 +262,101 @@ export async function pickTakeoutZipsFromDrive(
   const google = await loadGoogleLibraries();
   const token = await requestAccessToken(google);
   const picked = await pickDocs(google, token);
-  if (!picked.length) return [];
+  if (!picked.length) return { token, files: [] };
+  progress({ phase: 'Finding Takeout ZIP files…', completed: 0, total: 1 });
   const zips = await resolveZipDocs(picked, token);
   if (!zips.length) {
     throw new Error('No Takeout ZIP files were selected. Choose takeout-*.zip, or a folder that contains them.');
   }
-  const files: File[] = [];
-  for (const [index, zip] of zips.entries()) {
-    files.push(await downloadDriveFile(zip, token, progress, index + 1, zips.length));
+  return {
+    token,
+    files: zips.map((zip) => ({ id: zip.id, name: zip.name })),
+  };
+}
+
+export async function extractDriveZipsRemote(
+  token: string,
+  files: DriveZipRef[],
+  mode: Mode,
+  source: string,
+  progress: (update: DriveProgress) => void = () => undefined,
+  signal?: AbortSignal,
+): Promise<DriveExtractResult> {
+  const api = extractApiUrl();
+  if (!api) {
+    throw new Error('Drive extraction is not configured for this site.');
   }
-  return files;
+  progress({ phase: 'Starting cloud extraction…', completed: 0, total: files.length || 1 });
+  const response = await fetch(`${api}/extract`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ files, mode, source }),
+    signal,
+  });
+  if (!response.ok) {
+    let message = 'The Drive export could not be processed in the cloud.';
+    try {
+      const body = (await response.json()) as { message?: string };
+      if (body.message) message = body.message;
+    } catch {
+      // Keep the generic error when the extractor does not return JSON.
+    }
+    throw new Error(message);
+  }
+  if (!response.body) {
+    throw new Error('The Drive extractor returned no data.');
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let result: DriveExtractResult | null = null;
+  while (!result) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const messages = buffer.split('\n\n');
+    buffer = done ? '' : (messages.pop() ?? '');
+    for (const message of messages) {
+      const line = message
+        .split('\n')
+        .find((entry) => entry.startsWith('data: '));
+      if (!line) continue;
+      const payload = JSON.parse(line.slice(6)) as {
+        type?: string;
+        phase?: string;
+        completed?: number;
+        total?: number;
+        message?: string;
+        archive?: string;
+        rows?: Row[];
+        manifest?: Record<string, unknown>;
+      };
+      if (payload.type === 'progress') {
+        progress({
+          phase: payload.phase || 'Extracting…',
+          completed: payload.completed ?? 0,
+          total: payload.total || 1,
+        });
+        continue;
+      }
+      if (payload.type === 'error') {
+        throw new Error(payload.message || 'The Drive export could not be processed.');
+      }
+      if (payload.type === 'done' && payload.archive && payload.manifest && payload.rows) {
+        result = {
+          archive: decodeBase64(payload.archive),
+          rows: payload.rows,
+          manifest: payload.manifest,
+        };
+        break;
+      }
+    }
+    if (done) break;
+  }
+  if (!result) {
+    throw new Error('The Drive extractor closed before finishing.');
+  }
+  return result;
 }
