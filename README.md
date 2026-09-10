@@ -4,6 +4,12 @@ A private, browser-based tool that extracts EXIF and gallery metadata from photo
 
 Photos are read locally with ExifTool compiled to WebAssembly. Source media is never uploaded.
 
+**Share this link:** [https://kkam717.github.io/gallery-extraction/](https://kkam717.github.io/gallery-extraction/)
+
+Source: [github.com/kkam717/gallery-extraction](https://github.com/kkam717/gallery-extraction)
+
+Recipients open the link in a browser, choose photos or an unzipped export folder, extract metadata, and download a ZIP. They do not need to install anything. Use **Try a sample** to confirm the tool works before sending your own files.
+
 The downloaded ZIP contains:
 
 - `photos.sqlite` — SQLite database
@@ -13,25 +19,11 @@ The downloaded ZIP contains:
 - `manifest.json` — coverage, mode and error counts
 - `queries.sql` — starter queries
 
-## Share it
+## Publish updates
 
-This app is a static site. After this repository is on GitHub, the included GitHub Actions workflow publishes it to GitHub Pages.
+This repo deploys to GitHub Pages with `.github/workflows/deploy.yml` on every push to `main`.
 
-The public URL is:
-
-```text
-https://<github-username>.github.io/<repo-name>/
-```
-
-If you publish it from [kkam717/gallery-extraction](https://github.com/kkam717/gallery-extraction), that URL is:
-
-```text
-https://kkam717.github.io/gallery-extraction/
-```
-
-Send that link. Recipients open it in a browser, choose photos or an unzipped export folder, extract metadata, and download a ZIP. They do not need to install anything.
-
-The first GitHub Pages deploy enables the Pages site automatically. If the workflow asks for environment approval, approve **github-pages** in the repository settings.
+If the first Actions run asks for environment approval, approve **github-pages** once in the repository settings.
 
 ## Run locally
 

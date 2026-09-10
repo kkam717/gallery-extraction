@@ -3,6 +3,11 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "homepage": "https://kkam717.github.io/gallery-extraction/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kkam717/gallery-extraction.git"
+  },
   "engines": {
     "node": ">=22.13.0"
   },
