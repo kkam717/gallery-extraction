@@ -20,6 +20,9 @@ describe('dataset helpers', () => {
 
   it('resolves runtime assets under the configured base path', () => {
     expect(runtimeAsset('runtime/sql-wasm.wasm')).toMatch(/runtime\/sql-wasm\.wasm$/);
+    expect(runtimeAsset('runtime/sql-wasm-browser.wasm')).toMatch(
+      /runtime\/sql-wasm-browser\.wasm$/,
+    );
     expect(runtimeAsset('runtime/zeroperl.wasm')).toMatch(/runtime\/zeroperl\.wasm$/);
   });
 
