@@ -3,8 +3,10 @@ import {
   Aperture,
   ArrowRight,
   CheckCircle2,
+  Cloud,
   Database,
   Download,
+  FileArchive,
   FileCheck2,
   FileJson,
   FolderUp,
@@ -31,6 +33,8 @@ import {
   type Mode,
   type Row,
 } from '@/lib/dataset';
+import { isDriveConfigured, pickTakeoutZipsFromDrive } from '@/lib/drive';
+import { filesFromTakeoutZips, isZipFile } from '@/lib/takeout';
 
 type WorkerProgress = { phase: string; completed: number; total: number };
 type Completed = {
@@ -69,7 +73,9 @@ function downloadArchive(archive: Uint8Array) {
 export default function App() {
   const folderInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const zipInput = useRef<HTMLInputElement>(null);
   const worker = useRef<Worker | null>(null);
+  const ingestId = useRef(0);
   const [files, setFiles] = useState<InputFile[]>([]);
   const [mode, setMode] = useState<Mode>('full');
   const [source, setSource] = useState('mixed');
@@ -92,6 +98,40 @@ export default function App() {
     setError(null);
     setResult(null);
     setProgress(null);
+  }
+
+  async function ingestFiles(selected: InputFile[]) {
+    const id = ++ingestId.current;
+    const zips = selected.filter((item) => isZipFile(item.file));
+    const rest = selected.filter((item) => !isZipFile(item.file));
+    setError(null);
+    setResult(null);
+    if (!zips.length) {
+      selectFiles(selected);
+      return;
+    }
+    setProgress({
+      phase: 'Reading Takeout ZIP files…',
+      completed: 0,
+      total: zips.length,
+    });
+    try {
+      const unpacked = await filesFromTakeoutZips(
+        zips.map((item) => item.file),
+        setProgress,
+      );
+      if (id !== ingestId.current) return;
+      setSource('google');
+      selectFiles([...rest, ...unpacked]);
+    } catch (caught) {
+      if (id !== ingestId.current) return;
+      setProgress(null);
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : 'The Takeout ZIP files could not be read.',
+      );
+    }
   }
 
   async function loadSample() {
@@ -172,6 +212,7 @@ export default function App() {
   }
 
   function reset() {
+    ingestId.current += 1;
     worker.current?.terminate();
     worker.current = null;
     setFiles([]);
@@ -180,6 +221,31 @@ export default function App() {
     setError(null);
     if (folderInput.current) folderInput.current.value = '';
     if (fileInput.current) fileInput.current.value = '';
+    if (zipInput.current) zipInput.current.value = '';
+  }
+
+  async function loadDriveZips() {
+    const id = ++ingestId.current;
+    setError(null);
+    setResult(null);
+    setProgress({ phase: 'Opening Google Drive…', completed: 0, total: 1 });
+    try {
+      const zips = await pickTakeoutZipsFromDrive(setProgress);
+      if (id !== ingestId.current) return;
+      if (!zips.length) {
+        setProgress(null);
+        return;
+      }
+      await ingestFiles(zips.map((file) => ({ file, path: file.name })));
+    } catch (caught) {
+      if (id !== ingestId.current) return;
+      setProgress(null);
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : 'Google Drive could not be opened.',
+      );
+    }
   }
 
   const percent = progress?.total
@@ -209,8 +275,8 @@ export default function App() {
             <div className="eyebrow">Gallery → Dataset</div>
             <h1>Your gallery, in data.</h1>
             <p>
-              Extract EXIF and sidecar metadata from photos, or from an Apple or
-              Google export folder. Nothing is uploaded.
+              Extract EXIF and sidecar metadata from photos, an Apple or Google
+              export folder, or Google Takeout ZIP files. Nothing is uploaded.
             </p>
           </div>
           <div className="steps" aria-label="Three-step process">
@@ -250,7 +316,7 @@ export default function App() {
                     } as InputHTMLAttributes<HTMLInputElement>)}
                     hidden
                     onChange={(event) =>
-                      selectFiles(folderFiles(event.target.files))
+                      void ingestFiles(folderFiles(event.target.files))
                     }
                   />
                   <input
@@ -260,7 +326,17 @@ export default function App() {
                     accept="image/*,video/*,.heic,.heif,.dng,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.json,.xmp"
                     hidden
                     onChange={(event) =>
-                      selectFiles(folderFiles(event.target.files))
+                      void ingestFiles(folderFiles(event.target.files))
+                    }
+                  />
+                  <input
+                    ref={zipInput}
+                    type="file"
+                    multiple
+                    accept=".zip,application/zip,application/x-zip-compressed"
+                    hidden
+                    onChange={(event) =>
+                      void ingestFiles(folderFiles(event.target.files))
                     }
                   />
                   <div
@@ -274,7 +350,7 @@ export default function App() {
                       event.preventDefault();
                       setDragging(false);
                       if (event.dataTransfer.files.length)
-                        selectFiles(folderFiles(event.dataTransfer.files));
+                        void ingestFiles(folderFiles(event.dataTransfer.files));
                     }}
                     onDragLeave={() => setDragging(false)}
                   >
@@ -282,12 +358,12 @@ export default function App() {
                     <h3>
                       {files.length
                         ? `${files.length.toLocaleString()} files selected`
-                        : 'Drop photos or an unzipped export folder'}
+                        : 'Drop photos, an unzipped export, or Takeout ZIP files'}
                     </h3>
                     <p>
                       {files.length
                         ? `${counts.media.toLocaleString()} media · ${counts.sidecars.toLocaleString()} sidecars · ${counts.ignored.toLocaleString()} ignored`
-                        : 'Keep JSON or XMP sidecar files next to the photos if you have a Takeout or Photos export. A full library is fine — only headers are read.'}
+                        : 'Google Takeout can stay zipped. Keep JSON or XMP sidecars next to photos if you already unzipped. Only headers are read.'}
                     </p>
                     <div className="chooser-row">
                       <button
@@ -314,9 +390,33 @@ export default function App() {
                       >
                         Try a sample
                       </button>
+                      <button
+                        className="secondary"
+                        onClick={() => zipInput.current?.click()}
+                        disabled={!!progress}
+                        type="button"
+                      >
+                        <FileArchive size={16} /> Takeout ZIP(s)
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => {
+                          if (isDriveConfigured()) void loadDriveZips();
+                          else zipInput.current?.click();
+                        }}
+                        disabled={!!progress}
+                        type="button"
+                        title={
+                          isDriveConfigured()
+                            ? 'Download Takeout ZIP files from your Google Drive into this browser'
+                            : 'Select Takeout ZIP files you downloaded from Google Drive'
+                        }
+                      >
+                        <Cloud size={16} /> From Google Drive
+                      </button>
                     </div>
                     <span className="subtle">
-                      Your photos never leave this browser.
+                      Photos stay in this browser. Drive ZIPs are downloaded here, not to our servers.
                     </span>
                   </div>
 
@@ -546,9 +646,12 @@ export default function App() {
               <details>
                 <summary>How do I export my photos?</summary>
                 <p>
-                  <strong>Google:</strong> export Google Photos through Takeout.
-                  Unzip every part into the same folder tree and keep JSON
-                  files.
+                  <strong>Google:</strong> export Google Photos through Takeout
+                  and save the archives to Drive. Then use{' '}
+                  <strong>From Google Drive</strong> or{' '}
+                  <strong>Takeout ZIP(s)</strong> and select every{' '}
+                  <code>takeout-*.zip</code> part. You can still unzip locally
+                  and choose the folder. Keep the JSON sidecar files.
                 </p>
                 <p>
                   <strong>Apple:</strong> in Photos on Mac, select photos → File

@@ -8,7 +8,9 @@ Photos are read locally in the browser. Only the metadata header of each file is
 
 Source: [github.com/kkam717/gallery-extraction](https://github.com/kkam717/gallery-extraction)
 
-Recipients open the link in a browser, choose photos or an unzipped export folder, extract metadata, and download a ZIP. They do not need to install anything. A few thousand photos is expected to work. Use **Try a sample** to confirm the tool works before sending your own files.
+Recipients open the link in a browser, choose photos, an unzipped export folder, or Google Takeout ZIP files. **From Google Drive** downloads those ZIPs into the browser; they are not uploaded to this site. Extract metadata and download a dataset ZIP. They do not need to install anything. A few thousand photos is expected to work. Use **Try a sample** to confirm the tool works before sending your own files.
+
+If Takeout split the export into several `takeout-*.zip` parts, select every part. The browser unpacks media headers and sidecar JSON inside the archives.
 
 The downloaded ZIP contains:
 
@@ -24,6 +26,16 @@ The downloaded ZIP contains:
 This repo deploys to GitHub Pages with `.github/workflows/deploy.yml` on every push to `main`.
 
 If the first Actions run asks for environment approval, approve **github-pages** once in the repository settings.
+
+## Google Drive (optional)
+
+The **From Google Drive** button needs a Google Cloud OAuth client and API key. Create them in a Google Cloud project with the Google Picker API and Google Drive API enabled, then set:
+
+- `VITE_GOOGLE_CLIENT_ID`
+- `VITE_GOOGLE_API_KEY`
+- `VITE_GOOGLE_APP_ID` (the project number)
+
+Authorized JavaScript origins should include `https://kkam717.github.io` and `http://127.0.0.1:43123`. Restrict the API key to those HTTP referrers. Use the `drive.file` scope so the site only sees files the user picks. For GitHub Pages, store the same values as repository secrets with those names.
 
 ## Run locally
 

@@ -176,7 +176,7 @@ export async function createDataset(
     sidecarFiles = files.filter(isSidecar);
   if (!media.length)
     throw new Error(
-      'No supported photos or videos found. Choose the folder containing your unzipped originals.',
+      'No supported photos or videos found. Choose photos, an unzipped export folder, or Google Takeout ZIP files.',
     );
   const contributor = crypto.randomUUID();
   const mediaIds = new Map(media.map((f) => [f.path, crypto.randomUUID()]));
@@ -439,7 +439,7 @@ Limited mode retains only common camera, date, dimension and exposure fields. GP
 capture_time_original stays in the supplied format and may lack a timezone. Do not assume UTC. gallery_capture_time_utc comes from a matching Google photoTakenTime Unix timestamp when all matched sidecars agree. Original times are never overwritten by gallery dates. Google-edited GPS, captions and Apple XMP remain in sidecars, not flattened photo columns.
 Exposure is seconds, focal length millimetres, altitude metres, coordinates decimal degrees. Null means missing or intentionally omitted. One gallery item can produce multiple files (Live Photos, RAW/JPEG pairs, album duplicates). No deduplication is performed. IDs are random per run. The source field is a user-supplied label, not per-file detection.
 
-Sidecars match exact names, .supplemental-metadata.json names, or a unique Google title in the same folder. Apple XMP can match a unique same-stem media file. JSON/XMP over 10 MB are marked as errors. Unsupported extensions are counted as ignored. Coverage describes the selected export, not the original cloud library. All Takeout parts must be unzipped into one folder tree; export completeness and album membership are not reconstructed.
+Sidecars match exact names, .supplemental-metadata.json names, or a unique Google title in the same folder. Apple XMP can match a unique same-stem media file. JSON/XMP over 10 MB are marked as errors. Unsupported extensions are counted as ignored. Coverage describes the selected export, not the original cloud library. All Takeout ZIP parts should be selected together (from Drive or disk), or unzipped into one folder tree. Export completeness and album membership are not reconstructed.
 
 Some damaged or unsupported files have error rows. Extraction errors do not mean the photo itself is necessarily damaged. Maker notes and tags outside the header slices may be omitted. No original media are included in this dataset or uploaded by this app.
 `;

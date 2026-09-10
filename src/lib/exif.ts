@@ -1,7 +1,7 @@
 import exifr from 'exifr';
 
 /** Only this many bytes are loaded per file. EXIF/XMP almost always sits in the header. */
-const HEADER_BYTES = 2 * 1024 * 1024;
+export const HEADER_BYTES = 2 * 1024 * 1024;
 
 const PARSE_OPTIONS = {
   tiff: true,

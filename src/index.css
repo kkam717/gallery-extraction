@@ -405,6 +405,11 @@ p {
   font-size: 14px;
 }
 
+.help code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .footer {
   display: flex;
   justify-content: space-between;
