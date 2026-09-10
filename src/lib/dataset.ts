@@ -1,6 +1,6 @@
-import { parseMetadata, dispose } from '@uswriting/exiftool';
 import initSqlJs from 'sql.js';
 import { zipSync, strToU8 } from 'fflate';
+import { readFileMetadata } from './exif';
 
 function siteOrigin(): string | null {
   return typeof location === 'undefined' ? null : `${location.origin}/`;
@@ -14,26 +14,8 @@ export function runtimeAsset(path: string): string {
   return origin ? new URL(relative, origin).href : relative;
 }
 
-/**
- * Zeroperl only uses the provided `fetch` when `window` and `document` exist.
- * Dedicated workers have neither, so it tries `node:fs/promises` and crashes.
- * Point document.baseURI at the app origin so relative WASM URLs do not resolve
- * against the worker script path under /assets/.
- */
-function useBrowserWasmLoader() {
-  const scope = globalThis as unknown as {
-    window?: unknown;
-    document?: unknown;
-    WorkerGlobalScope?: new () => object;
-  };
-  if (!scope.WorkerGlobalScope || !(globalThis instanceof scope.WorkerGlobalScope)) {
-    return;
-  }
-  const origin = siteOrigin() ?? 'http://localhost/';
-  scope.window ??= scope;
-  scope.document ??= {
-    baseURI: new URL(import.meta.env.BASE_URL || '/', origin).href,
-  };
+function yieldThread(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 export type Mode = 'full' | 'limited';
 export type InputFile = { file: File; path: string };
@@ -179,23 +161,8 @@ export function makeRow(
       row[key] = null;
   return row;
 }
-export async function readMetadata(
-  file: File,
-  runtimeFetch: () => Promise<Response>,
-): Promise<Record<string, unknown>> {
-  // Keep names out of the virtual runtime; the real name is stored separately in full mode.
-  const result = await parseMetadata(
-    new File([file], `media.${extension(file.name)}`, { type: file.type }),
-    {
-      args: ['-json', '-G1:4', '-a', '-s', '-n', '-struct'],
-      fetch: runtimeFetch,
-      transform: JSON.parse,
-    },
-  );
-  if (!result.success) throw new Error('Metadata could not be decoded');
-  const raw = Array.isArray(result.data) ? result.data[0] : null;
-  if (!raw || typeof raw !== 'object')
-    throw new Error('No readable metadata returned');
+export async function readMetadata(file: File): Promise<Record<string, unknown>> {
+  const raw = await readFileMetadata(file);
   return clean(raw);
 }
 export async function createDataset(
@@ -203,10 +170,8 @@ export async function createDataset(
   mode: Mode,
   source: string,
   progress: (p: ProgressUpdate) => void,
-  runtimeFetch = () => fetch(runtimeAsset('runtime/zeroperl.wasm')),
   sqliteLocate = (name: string) => runtimeAsset(`runtime/${name}`),
 ): Promise<Result> {
-  useBrowserWasmLoader();
   const media = files.filter(isMedia),
     sidecarFiles = files.filter(isSidecar);
   if (!media.length)
@@ -236,25 +201,15 @@ export async function createDataset(
   let bytes = 0;
   const account = (obj: unknown) => {
     bytes += JSON.stringify(obj).length * 2;
-    if (bytes > 100 * 1024 * 1024)
+    if (bytes > 400 * 1024 * 1024)
       throw new Error(
         'This export contains too much metadata for one browser download. Choose smaller folders and run them separately.',
       );
   };
   const total = media.length + sidecarFiles.length;
   let completed = 0;
-  progress({ phase: 'Loading the metadata reader…', completed, total });
-  // Fail early if the runtime cannot initialize, rather than misreporting every photo as corrupt.
-  const probe = await parseMetadata(
-    { name: 'probe.txt', data: new Uint8Array([116, 101, 115, 116]) },
-    { args: ['-ver'], fetch: runtimeFetch },
-  );
-  if (!probe.success)
-    throw new Error(
-      'The metadata reader could not start. Reload the page and try again.',
-    );
-  try {
-    for (const f of sidecarFiles) {
+  progress({ phase: 'Reading file headers…', completed, total });
+  for (const f of sidecarFiles) {
       const sidecar: Sidecar = {
         sidecar_id: crypto.randomUUID(),
         file_name: mode === 'full' ? base(f.path) : null,
@@ -280,7 +235,7 @@ export async function createDataset(
           if (!candidates.length && typeof data.title === 'string')
             candidates = byName.get(parent(f.path) + data.title) || [];
         } else {
-          data = await readMetadata(f.file, runtimeFetch);
+          data = await readMetadata(f.file);
           candidates =
             byName.get(stem(f.path)) || byStem.get(stem(f.path)) || [];
         }
@@ -312,6 +267,7 @@ export async function createDataset(
         completed: ++completed,
         total,
       });
+      if (completed % 8 === 0) await yieldThread();
     }
     const SQL = await initSqlJs({ locateFile: sqliteLocate });
     const db = new SQL.Database();
@@ -341,7 +297,7 @@ export async function createDataset(
         let raw: Record<string, unknown> = {};
         let failed = false;
         try {
-          raw = await readMetadata(f.file, runtimeFetch);
+          raw = await readMetadata(f.file);
         } catch {
           failed = true;
         }
@@ -387,6 +343,7 @@ export async function createDataset(
           completed: ++completed,
           total,
         });
+        if (completed % 8 === 0) await yieldThread();
       }
       insert.free();
       const exportedSidecars = sidecars.map((s) => ({
@@ -414,7 +371,7 @@ export async function createDataset(
         source,
         mode,
         created_utc: new Date().toISOString(),
-        extractor: 'ExifTool 13.42 (WebAssembly)',
+        extractor: 'exifr (header-only, in-browser)',
         media_files: media.length,
         sidecar_files: sidecars.length,
         ignored_files: files.length - media.length - sidecars.length,
@@ -457,9 +414,6 @@ export async function createDataset(
     } finally {
       db.close();
     }
-  } finally {
-    await dispose();
-  }
 }
 export const QUERIES = `-- Count files by camera (repeated export copies are included).
 SELECT camera_model, COUNT(*) AS files FROM photos GROUP BY camera_model ORDER BY files DESC;
@@ -479,7 +433,7 @@ sidecars.jsonl: supplementary Google JSON and Apple XMP, with match status and c
 manifest.json: settings, counts, ignored files, errors and missing/omitted fields.
 queries.sql: example queries.
 
-Full mode includes ExifTool-readable EXIF, IPTC, XMP and maker notes, plus sidecars. It can contain GPS, names, captions, account links, device serials and other personal information. Not anonymous. Binary payloads and thumbnails are not extracted. SourceFile and filesystem tags are removed from raw media metadata. Arbitrary sidecar text can still contain paths.
+Full mode includes readable EXIF, IPTC and XMP from file headers, plus sidecars. It can contain GPS, names, captions, account links, device serials and other personal information. Not anonymous. Binary payloads and thumbnails are not extracted. SourceFile and filesystem tags are removed from raw media metadata. Arbitrary sidecar text can still contain paths. Only the first 2 MB of each file is read. No full-image decode.
 Limited mode retains only common camera, date, dimension and exposure fields. GPS, filenames, lens text and all arbitrary raw metadata/sidecar payloads are omitted. This is deliberately NOT a full EXIF export. Dates and camera models can still identify people.
 
 capture_time_original stays in the supplied format and may lack a timezone. Do not assume UTC. gallery_capture_time_utc comes from a matching Google photoTakenTime Unix timestamp when all matched sidecars agree. Original times are never overwritten by gallery dates. Google-edited GPS, captions and Apple XMP remain in sidecars, not flattened photo columns.
@@ -487,5 +441,5 @@ Exposure is seconds, focal length millimetres, altitude metres, coordinates deci
 
 Sidecars match exact names, .supplemental-metadata.json names, or a unique Google title in the same folder. Apple XMP can match a unique same-stem media file. JSON/XMP over 10 MB are marked as errors. Unsupported extensions are counted as ignored. Coverage describes the selected export, not the original cloud library. All Takeout parts must be unzipped into one folder tree; export completeness and album membership are not reconstructed.
 
-ExifTool cannot decode every proprietary field. Some damaged or unsupported files have error rows. Extraction errors do not mean the photo itself is necessarily damaged. Browser memory is finite; split unusually large metadata collections into smaller folders. No original media are included in this dataset or uploaded by this app.
+Some damaged or unsupported files have error rows. Extraction errors do not mean the photo itself is necessarily damaged. Maker notes and tags outside the header slices may be omitted. No original media are included in this dataset or uploaded by this app.
 `;

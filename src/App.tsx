@@ -162,7 +162,7 @@ export default function App() {
     };
     nextWorker.onerror = () => {
       setError(
-        'The metadata reader stopped unexpectedly. Reload the page and try a smaller folder.',
+        'The metadata reader stopped unexpectedly. Reload the page and try again.',
       );
       setProgress(null);
       nextWorker.terminate();
@@ -287,7 +287,7 @@ export default function App() {
                     <p>
                       {files.length
                         ? `${counts.media.toLocaleString()} media · ${counts.sidecars.toLocaleString()} sidecars · ${counts.ignored.toLocaleString()} ignored`
-                        : 'Keep JSON or XMP sidecar files next to the photos if you have a Takeout or Photos export.'}
+                        : 'Keep JSON or XMP sidecar files next to the photos if you have a Takeout or Photos export. A full library is fine — only headers are read.'}
                     </p>
                     <div className="chooser-row">
                       <button
@@ -394,8 +394,8 @@ export default function App() {
                         <span className="progress-value">{percent}%</span>
                       </Progress>
                       <p className="notice">
-                        Keep this tab open. Large galleries can take several
-                        minutes.
+                        Keep this tab open. Only file headers are read, so a
+                        full library can run in this tab.
                       </p>
                     </div>
                   )}

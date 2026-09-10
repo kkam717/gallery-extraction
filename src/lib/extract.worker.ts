@@ -17,7 +17,7 @@ self.onmessage = async (
       message:
         error instanceof Error
           ? error.message
-          : 'Extraction failed. Try a smaller folder.',
+          : 'Extraction failed. Reload the page and try again.',
     });
   }
 };

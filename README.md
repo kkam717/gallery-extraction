@@ -2,13 +2,13 @@
 
 A private, browser-based tool that extracts EXIF and gallery metadata from photos, Apple Photos exports, or Google Photos Takeout folders.
 
-Photos are read locally with ExifTool compiled to WebAssembly. Source media is never uploaded.
+Photos are read locally in the browser. Only the metadata header of each file is parsed (not the full image, and not WebAssembly ExifTool). Source media is never uploaded.
 
 **Share this link:** [https://kkam717.github.io/gallery-extraction/](https://kkam717.github.io/gallery-extraction/)
 
 Source: [github.com/kkam717/gallery-extraction](https://github.com/kkam717/gallery-extraction)
 
-Recipients open the link in a browser, choose photos or an unzipped export folder, extract metadata, and download a ZIP. They do not need to install anything. Use **Try a sample** to confirm the tool works before sending your own files.
+Recipients open the link in a browser, choose photos or an unzipped export folder, extract metadata, and download a ZIP. They do not need to install anything. A few thousand photos is expected to work. Use **Try a sample** to confirm the tool works before sending your own files.
 
 The downloaded ZIP contains:
 
