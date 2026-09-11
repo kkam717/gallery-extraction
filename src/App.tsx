@@ -442,8 +442,7 @@ export default function App() {
                     </div>
                     <span className="subtle">
                       Local photos stay in this browser. From Google Drive, select
-                      the Takeout folder — every ZIP part inside is processed in
-                      the cloud.
+                      the Takeout folder, then every takeout-*.zip inside it.
                     </span>
                   </div>
 
@@ -679,10 +678,10 @@ export default function App() {
                 <p>
                   <strong>Google:</strong> export Google Photos through Takeout
                   and save the archives to Drive. Then use{' '}
-                  <strong>From Google Drive</strong> and select the{' '}
-                  <strong>Takeout</strong> folder. Every{' '}
-                  <code>takeout-*.zip</code> part inside is processed together.
-                  You can still download the ZIPs and use{' '}
+                  <strong>From Google Drive</strong>, select the{' '}
+                  <strong>Takeout</strong> folder, and select every{' '}
+                  <code>takeout-*.zip</code> part (Shift-click the first and
+                  last). You can still download the ZIPs and use{' '}
                   <strong>Takeout ZIP(s)</strong>, or unzip locally and choose
                   the folder. Keep the JSON sidecar files.
                 </p>

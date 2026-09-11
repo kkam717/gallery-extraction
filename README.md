@@ -10,7 +10,7 @@ Source: [github.com/kkam717/gallery-extraction](https://github.com/kkam717/galle
 
 Recipients open the link in a browser, choose photos, an unzipped export folder, or Google Takeout ZIP files. **From Google Drive** processes those ZIPs in the cloud so the browser never downloads the archives. Extract metadata and download a dataset ZIP. They do not need to install anything. A few thousand photos is expected to work. Use **Try a sample** to confirm the tool works before sending your own files.
 
-If Takeout split the export into several `takeout-*.zip` parts, select the **Takeout** folder in Drive. Every ZIP part inside is processed together. You can still pick the ZIP files individually. The extractor unpacks media headers and sidecar JSON inside the archives.
+If Takeout split the export into several `takeout-*.zip` parts, select the **Takeout** folder in Drive, then select every ZIP inside it. The extractor unpacks media headers and sidecar JSON inside the archives.
 
 The downloaded ZIP contains:
 
@@ -35,7 +35,7 @@ The **From Google Drive** button needs a Google Cloud OAuth client, API key, and
 - `VITE_GOOGLE_API_KEY`
 - `VITE_GOOGLE_APP_ID` (the project number)
 
-Authorized JavaScript origins should include `https://kkam717.github.io` and `http://127.0.0.1:43123`. Restrict the API key to those HTTP referrers. The Drive picker uses `drive.file` plus `drive.readonly` so the Takeout folder and every ZIP inside it can be listed. Deploy `Dockerfile` to Cloud Run in the same project (`npm run build:extract-api` is used by the image). Then set `VITE_EXTRACT_API_URL` to that service URL, for example `https://gallery-extract-xxxxx.a.run.app`. For GitHub Pages, store the same values as repository secrets with those names.
+Authorized JavaScript origins should include `https://kkam717.github.io` and `http://127.0.0.1:43123`. Restrict the API key to those HTTP referrers. Use the `drive.file` scope so the site only sees files the user picks. Deploy `Dockerfile` to Cloud Run in the same project (`npm run build:extract-api` is used by the image). Then set `VITE_EXTRACT_API_URL` to that service URL, for example `https://gallery-extract-xxxxx.a.run.app`. For GitHub Pages, store the same values as repository secrets with those names.
 
 ## Run locally
 
