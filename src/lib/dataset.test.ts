@@ -4,7 +4,74 @@ import { unzipSync, strFromU8 } from 'fflate';
 import initSqlJs from 'sql.js';
 import { describe, expect, it } from 'vitest';
 import { createDataset, csvCell, getTag, makeRow, runtimeAsset } from './dataset';
-import { normalizeTags, readFileMetadata } from './exif';
+import {
+  extractCaptureTime,
+  extractGps,
+  normalizeTags,
+  readFileMetadata,
+} from './exif';
+
+function writeU16(view: DataView, offset: number, value: number) {
+  view.setUint16(offset, value, true);
+}
+
+function writeU32(view: DataView, offset: number, value: number) {
+  view.setUint32(offset, value, true);
+}
+
+function writeEntry(
+  view: DataView,
+  offset: number,
+  tag: number,
+  type: number,
+  count: number,
+  value: number,
+) {
+  writeU16(view, offset, tag);
+  writeU16(view, offset + 2, type);
+  writeU32(view, offset + 4, count);
+  writeU32(view, offset + 8, value);
+}
+
+function writeRational(view: DataView, offset: number, num: number, den: number) {
+  writeU32(view, offset, num);
+  writeU32(view, offset + 4, den);
+}
+
+function buildGpsTiff(): Uint8Array {
+  const bytes = new Uint8Array(230);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = 0x49;
+  bytes[1] = 0x49;
+  bytes[2] = 0x2a;
+  writeU32(view, 4, 8);
+
+  writeU16(view, 8, 2);
+  writeEntry(view, 10, 0x8769, 4, 1, 38);
+  writeEntry(view, 22, 0x8825, 4, 1, 96);
+
+  writeU16(view, 38, 2);
+  writeEntry(view, 40, 36867, 2, 20, 68);
+  writeEntry(view, 52, 36881, 2, 7, 88);
+  bytes.set(new TextEncoder().encode('2024:06:01 12:00:00\0'), 68);
+  bytes.set(new TextEncoder().encode('+01:00\0'), 88);
+
+  writeU16(view, 96, 6);
+  writeEntry(view, 98, 1, 2, 2, 0x4e);
+  writeEntry(view, 110, 2, 5, 3, 174);
+  writeEntry(view, 122, 3, 2, 2, 0x45);
+  writeEntry(view, 134, 4, 5, 3, 198);
+  writeEntry(view, 146, 5, 1, 1, 0);
+  writeEntry(view, 158, 6, 5, 1, 222);
+  writeRational(view, 174, 41, 1);
+  writeRational(view, 182, 53, 1);
+  writeRational(view, 190, 24, 1);
+  writeRational(view, 198, 12, 1);
+  writeRational(view, 206, 29, 1);
+  writeRational(view, 214, 24, 1);
+  writeRational(view, 222, 45, 1);
+  return bytes;
+}
 
 const tinyJpeg = Uint8Array.from(
   Buffer.from(
@@ -37,6 +104,82 @@ describe('dataset helpers', () => {
     expect(tags.GPSLongitude).toBe(12.49);
     expect(getTag(tags, ['GPSLatitude'])).toBe(41.89);
     expect(tags.DateTimeOriginal).toBe('2024-06-01T12:00:00.000Z');
+  });
+
+  it('decodes GPS IFD tags 1-6 and DateTimeOriginal with offset', () => {
+    expect(
+      extractGps({
+        1: 'S',
+        2: [
+          [41, 1],
+          [53, 1],
+          [24, 1],
+        ],
+        3: 'W',
+        4: [
+          [12, 1],
+          [29, 1],
+          [24, 1],
+        ],
+        5: Uint8Array.from([1]),
+        6: [120, 2],
+      }),
+    ).toEqual({
+      latitude: -(41 + 53 / 60 + 24 / 3600),
+      longitude: -(12 + 29 / 60 + 24 / 3600),
+      altitude_m: -60,
+    });
+    expect(
+      extractCaptureTime({
+        36867: '2024:06:01 12:00:00\x00',
+        36881: '+02:00\x00',
+      }),
+    ).toBe('2024:06:01 12:00:00+02:00');
+    expect(extractCaptureTime({ DateTimeOriginal: '2024:06:01 12:00:00' })).toBe(
+      '2024:06:01 12:00:00',
+    );
+  });
+
+  it('marks rows ok when time or GPS exist, warning when they do not', () => {
+    const file = new File([tinyJpeg], 'named.jpg', { type: 'image/jpeg' });
+    const input = { file, path: 'folder/named.jpg' };
+    expect(
+      makeRow(
+        { DateTimeOriginal: '2024:06:01 12:00:00+01:00' },
+        input,
+        'full',
+        'apple',
+        'person',
+        'photo',
+      ).status,
+    ).toBe('ok');
+    expect(
+      makeRow({ 'EXIF:GPSLatitude': 51.5 }, input, 'full', 'apple', 'person', 'photo').status,
+    ).toBe('ok');
+    expect(makeRow({ Error: 'parser failed' }, input, 'full', 'apple', 'person', 'photo').status).toBe(
+      'warning',
+    );
+    const limited = makeRow(
+      { 'EXIF:GPSLatitude': 51.5 },
+      input,
+      'limited',
+      'apple',
+      'person',
+      'photo',
+    );
+    expect(limited.status).toBe('ok');
+    expect(limited.latitude).toBeNull();
+  });
+
+  it('reads GPS from a TIFF GPS IFD even when wrapped like HEIC Exif', async () => {
+    const tiff = buildGpsTiff();
+    const wrapped = new Uint8Array(8 + tiff.length);
+    wrapped.set([0x45, 0x78, 0x69, 0x66, 0x00, 0x00], 2);
+    wrapped.set(tiff, 8);
+    const tags = await readFileMetadata(new File([wrapped], 'photo.heic', { type: 'image/heic' }));
+    expect(Number(getTag(tags, ['GPSLatitude']))).toBeCloseTo(41 + 53 / 60 + 24 / 3600, 6);
+    expect(Number(getTag(tags, ['GPSLongitude']))).toBeCloseTo(12 + 29 / 60 + 24 / 3600, 6);
+    expect(getTag(tags, ['DateTimeOriginal'])).toBe('2024:06:01 12:00:00+01:00');
   });
 
   it('extracts GPS and camera tags from a JPEG header', async () => {

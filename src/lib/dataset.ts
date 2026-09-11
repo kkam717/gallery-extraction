@@ -48,8 +48,8 @@ const textValue = (value: unknown): string => {
 };
 const FIELDS: Record<string, string[]> = {
   capture_time_original: [
-    'SubSecDateTimeOriginal',
     'DateTimeOriginal',
+    'SubSecDateTimeOriginal',
     'CreationDate',
     'CreateDate',
   ],
@@ -136,7 +136,7 @@ export function makeRow(
     source,
     file_name: mode === 'full' ? base(f.path) : null,
     file_bytes: f.file.size,
-    status: 'ok',
+    status: 'warning',
     gallery_capture_time_utc: null,
     sidecar_count: 0,
   };
@@ -153,9 +153,8 @@ export function makeRow(
             ? JSON.stringify(v)
             : textValue(v);
   }
-  if (getTag(raw, ['Error'])) row.status = 'error';
-  else if (getTag(raw, ['Warning'])) row.status = 'warning';
   if (String(row.mime_type || '').startsWith('text/')) row.status = 'error';
+  else if (row.capture_time_original || row.latitude != null) row.status = 'ok';
   if (mode === 'limited')
     for (const key of ['latitude', 'longitude', 'altitude_m', 'lens'])
       row[key] = null;
@@ -371,7 +370,7 @@ export async function createDataset(
         source,
         mode,
         created_utc: new Date().toISOString(),
-        extractor: 'exifr (header-only, in-browser)',
+        extractor: 'EXIF IFDs (DateTimeOriginal + GPS tags 1-6)',
         media_files: media.length,
         sidecar_files: sidecars.length,
         ignored_files: files.length - media.length - sidecars.length,
@@ -436,10 +435,11 @@ queries.sql: example queries.
 Full mode includes readable EXIF, IPTC and XMP from file headers, plus sidecars. It can contain GPS, names, captions, account links, device serials and other personal information. Not anonymous. Binary payloads and thumbnails are not extracted. SourceFile and filesystem tags are removed from raw media metadata. Arbitrary sidecar text can still contain paths. Only the first 2 MB of each file is read. No full-image decode.
 Limited mode retains only common camera, date, dimension and exposure fields. GPS, filenames, lens text and all arbitrary raw metadata/sidecar payloads are omitted. This is deliberately NOT a full EXIF export. Dates and camera models can still identify people.
 
-capture_time_original stays in the supplied format and may lack a timezone. Do not assume UTC. gallery_capture_time_utc comes from a matching Google photoTakenTime Unix timestamp when all matched sidecars agree. Original times are never overwritten by gallery dates. Google-edited GPS, captions and Apple XMP remain in sidecars, not flattened photo columns.
+capture_time_original is DateTimeOriginal with OffsetTimeOriginal appended when present, in the file's own format. Do not assume UTC. gallery_capture_time_utc comes from a matching Google photoTakenTime Unix timestamp when all matched sidecars agree. Original times are never overwritten by gallery dates. Google-edited GPS, captions and Apple XMP remain in sidecars, not flattened photo columns.
+GPS is decoded from the GPS IFD (tags 1-6) into decimal degrees and metres. status is ok when capture time or latitude is present, warning when the file opened but those are missing, and error only when the file could not be read. Missing GPS is not an error.
 Exposure is seconds, focal length millimetres, altitude metres, coordinates decimal degrees. Null means missing or intentionally omitted. One gallery item can produce multiple files (Live Photos, RAW/JPEG pairs, album duplicates). No deduplication is performed. IDs are random per run. The source field is a user-supplied label, not per-file detection.
 
 Sidecars match exact names, .supplemental-metadata.json names, or a unique Google title in the same folder. Apple XMP can match a unique same-stem media file. JSON/XMP over 10 MB are marked as errors. Unsupported extensions are counted as ignored. Coverage describes the selected export, not the original cloud library. All Takeout ZIP parts should be selected together (from Drive or disk), or unzipped into one folder tree. Export completeness and album membership are not reconstructed.
 
-Some damaged or unsupported files have error rows. Extraction errors do not mean the photo itself is necessarily damaged. Maker notes and tags outside the header slices may be omitted. No original media are included in this dataset or uploaded by this app.
+Some damaged or unsupported files have error rows. That does not mean the photo is damaged, and it does not mean GPS was stripped — files without capture time or GPS are warning, not error. Maker notes and tags outside the header slices may be omitted. No original media are included in this dataset or uploaded by this app.
 `;
