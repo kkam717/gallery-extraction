@@ -441,8 +441,8 @@ export default function App() {
                       </button>
                     </div>
                     <span className="subtle">
-                      Local photos stay in this browser. From Google Drive, select
-                      the Takeout folder, then every takeout-*.zip inside it.
+                      Local photos stay in this browser. From Google Drive, open
+                      Takeout and select every takeout-*.zip (Shift-click).
                     </span>
                   </div>
 
@@ -678,8 +678,8 @@ export default function App() {
                 <p>
                   <strong>Google:</strong> export Google Photos through Takeout
                   and save the archives to Drive. Then use{' '}
-                  <strong>From Google Drive</strong>, select the{' '}
-                  <strong>Takeout</strong> folder, and select every{' '}
+                  <strong>From Google Drive</strong>, open the{' '}
+                  <strong>Takeout</strong> folder and select every{' '}
                   <code>takeout-*.zip</code> part (Shift-click the first and
                   last). You can still download the ZIPs and use{' '}
                   <strong>Takeout ZIP(s)</strong>, or unzip locally and choose
