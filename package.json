@@ -30,7 +30,8 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "sql.js": "^1.14.2",
-    "tailwind-merge": "^3.3.1"
+    "tailwind-merge": "^3.3.1",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.13",
@@ -38,11 +39,12 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@types/sql.js": "^1.4.11",
+    "@types/yauzl": "^3.4.0",
     "@vitejs/plugin-react": "^6.1.0",
     "esbuild": "^0.28.0",
     "oxlint": "^1.79.0",
-    "tsx": "^4.20.5",
     "tailwindcss": "^4.1.13",
+    "tsx": "^4.20.5",
     "typescript": "~5.9.3",
     "vite": "^8.2.2",
     "vitest": "^3.2.7"

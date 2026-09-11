@@ -65,6 +65,20 @@ function keepLimit(path: string): number {
   return ext === 'json' || ext === 'xmp' ? SIDECAR_BYTES : HEADER_BYTES;
 }
 
+export function takeoutInputFile(path: string, bytes: Uint8Array): InputFile {
+  const normalized = normalizeZipPath(path);
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return {
+    file: new File([copy], fileName(normalized), { type: mimeFor(normalized) }),
+    path: normalized,
+  };
+}
+
+export function takeoutKeepLimit(path: string): number {
+  return keepLimit(normalizeZipPath(path));
+}
+
 async function* fileChunks(file: File): AsyncIterable<Uint8Array> {
   if (typeof file.stream === 'function') {
     const reader = file.stream().getReader();

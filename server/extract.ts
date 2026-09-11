@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { createDataset, type Mode, type Result } from '../src/lib/dataset';
-import { filesFromTakeoutZipChunks, isZipFile, isZipName } from '../src/lib/takeout';
+import { isZipFile, isZipName } from '../src/lib/takeout';
+import { filesFromDriveZip } from './drive-zip';
 
 const require = createRequire(import.meta.url);
 const FILE_ID = /^[\w.-]+$/;
@@ -158,32 +159,6 @@ async function resolveZipFiles(request: ExtractRequest, token: string): Promise<
   return files;
 }
 
-async function* driveFileChunks(
-  file: DriveZipRef,
-  token: string,
-): AsyncIterable<Uint8Array> {
-  const response = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`,
-    { headers: { Authorization: `Bearer ${token}` } },
-  );
-  if (!response.ok) {
-    throw new Error(`Could not read ${file.name} from Google Drive.`);
-  }
-  if (!response.body) {
-    throw new Error(`Google Drive returned no data for ${file.name}.`);
-  }
-  const reader = response.body.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) yield value;
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 export async function extractDriveZips(
   token: string,
   request: ExtractRequest,
@@ -209,13 +184,7 @@ export async function extractDriveZips(
       completed: index,
       total: zips.length,
     });
-    const unpacked = await filesFromTakeoutZipChunks(
-      file.name,
-      driveFileChunks(file, token),
-      progress,
-      index + 1,
-      zips.length,
-    );
+    const unpacked = await filesFromDriveZip(file, token, progress);
     for (const item of unpacked) {
       if (seen.has(item.path)) continue;
       seen.add(item.path);
