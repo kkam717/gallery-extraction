@@ -107,18 +107,27 @@ function asRecord(value: unknown): Record<string | number, unknown> | null {
   return value as Record<string | number, unknown>;
 }
 
+function namedTag(ifd: Record<string | number, unknown>, leaf: string): unknown {
+  if (ifd[leaf] != null) return ifd[leaf];
+  for (const [key, value] of Object.entries(ifd)) {
+    if (key.split(':').pop() === leaf && value != null) return value;
+  }
+  return undefined;
+}
+
 function ifdValue(
   ifd: Record<string | number, unknown>,
   tag: number,
   ...names: string[]
 ): unknown {
+  for (const name of names) {
+    const named = namedTag(ifd, name);
+    if (named != null) return named;
+  }
   if (Object.prototype.hasOwnProperty.call(ifd, tag) && ifd[tag] != null) return ifd[tag];
   const asString = String(tag);
   if (Object.prototype.hasOwnProperty.call(ifd, asString) && ifd[asString] != null) {
     return ifd[asString];
-  }
-  for (const name of names) {
-    if (ifd[name] != null) return ifd[name];
   }
   return undefined;
 }
@@ -158,6 +167,13 @@ function refStr(ref: unknown): string {
   return stripNull(String(ref ?? '')).toUpperCase();
 }
 
+/** W/West and S/South always use the negative hemisphere; never double-flip. */
+export function applyHemisphere(value: number, ref: unknown, southOrWest: 'S' | 'W'): number {
+  const r = refStr(ref);
+  if (!r) return value;
+  return r.startsWith(southOrWest) ? -Math.abs(value) : Math.abs(value);
+}
+
 function altitudeRef(value: unknown): number {
   if (value instanceof Uint8Array) return value[0] ?? 0;
   if (value instanceof ArrayBuffer) return new Uint8Array(value)[0] ?? 0;
@@ -181,8 +197,8 @@ export function extractGps(gpsIfd: Record<string | number, unknown>): GpsFix {
     const lat = dmsToDecimal(latDms);
     const lon = dmsToDecimal(lonDms);
     if (lat != null && lon != null) {
-      latitude = refStr(ifdValue(gpsIfd, GPS_LAT_REF, 'GPSLatitudeRef') ?? 'N') === 'S' ? -lat : lat;
-      longitude = refStr(ifdValue(gpsIfd, GPS_LON_REF, 'GPSLongitudeRef') ?? 'E') === 'W' ? -lon : lon;
+      latitude = applyHemisphere(lat, ifdValue(gpsIfd, GPS_LAT_REF, 'GPSLatitudeRef') ?? 'N', 'S');
+      longitude = applyHemisphere(lon, ifdValue(gpsIfd, GPS_LON_REF, 'GPSLongitudeRef') ?? 'E', 'W');
     }
   }
 
@@ -421,14 +437,20 @@ function applyGpsAndTime(
 ): Record<string, unknown> {
   const gps = extractGps(gpsIfd);
   const fallback = extractGps(tags);
-  const lat =
+  const latRef =
+    ifdValue(gpsIfd, GPS_LAT_REF, 'GPSLatitudeRef') ?? namedTag(tags, 'GPSLatitudeRef');
+  const lonRef =
+    ifdValue(gpsIfd, GPS_LON_REF, 'GPSLongitudeRef') ?? namedTag(tags, 'GPSLongitudeRef');
+  let lat =
     gps.latitude ??
     fallback.latitude ??
     (typeof parsed.latitude === 'number' ? parsed.latitude : null);
-  const lng =
+  let lng =
     gps.longitude ??
     fallback.longitude ??
     (typeof parsed.longitude === 'number' ? parsed.longitude : null);
+  if (lat != null) lat = applyHemisphere(lat, latRef, 'S');
+  if (lng != null) lng = applyHemisphere(lng, lonRef, 'W');
   const alt = gps.altitude_m ?? fallback.altitude_m;
   if (lat != null) writeNamed(tags, 'GPSLatitude', lat);
   if (lng != null) writeNamed(tags, 'GPSLongitude', lng);

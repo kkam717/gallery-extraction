@@ -1,6 +1,6 @@
 import initSqlJs from 'sql.js';
 import { zipSync, strToU8 } from 'fflate';
-import { readFileMetadata } from './exif';
+import { applyHemisphere, readFileMetadata } from './exif';
 
 function siteOrigin(): string | null {
   return typeof location === 'undefined' ? null : `${location.origin}/`;
@@ -152,6 +152,12 @@ export function makeRow(
           : typeof v === 'object'
             ? JSON.stringify(v)
             : textValue(v);
+  }
+  if (typeof row.latitude === 'number') {
+    row.latitude = applyHemisphere(row.latitude, getTag(raw, ['GPSLatitudeRef']), 'S');
+  }
+  if (typeof row.longitude === 'number') {
+    row.longitude = applyHemisphere(row.longitude, getTag(raw, ['GPSLongitudeRef']), 'W');
   }
   if (String(row.mime_type || '').startsWith('text/')) row.status = 'error';
   else if (row.capture_time_original || row.latitude != null) row.status = 'ok';

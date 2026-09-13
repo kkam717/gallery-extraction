@@ -5,6 +5,7 @@ import initSqlJs from 'sql.js';
 import { describe, expect, it } from 'vitest';
 import { createDataset, csvCell, getTag, makeRow, runtimeAsset } from './dataset';
 import {
+  applyHemisphere,
   extractCaptureTime,
   extractGps,
   normalizeTags,
@@ -138,6 +139,35 @@ describe('dataset helpers', () => {
     expect(extractCaptureTime({ DateTimeOriginal: '2024:06:01 12:00:00' })).toBe(
       '2024:06:01 12:00:00',
     );
+  });
+
+  it('applies W/S hemisphere without double-flipping signed values', () => {
+    expect(applyHemisphere(71.40340555555557, 'W', 'W')).toBeCloseTo(-71.40340555555557, 8);
+    expect(applyHemisphere(-71.40340555555557, 'West', 'W')).toBeCloseTo(-71.40340555555557, 8);
+    expect(applyHemisphere(41.827, 'N', 'S')).toBeCloseTo(41.827, 8);
+    expect(
+      extractGps({
+        GPSLatitude: 41.82714444444445,
+        GPSLatitudeRef: 'N',
+        GPSLongitude: 71.40340555555557,
+        GPSLongitudeRef: 'W',
+        latitude: 41.82714444444445,
+        longitude: -71.40340555555557,
+      }).longitude,
+    ).toBeCloseTo(-71.40340555555557, 8);
+    const tags = normalizeTags({
+      GPSLatitude: 41.82714444444445,
+      GPSLatitudeRef: 'N',
+      GPSLongitude: 71.40340555555557,
+      GPSLongitudeRef: 'W',
+      latitude: 41.82714444444445,
+      longitude: -71.40340555555557,
+    });
+    expect(tags.GPSLongitude).toBeCloseTo(-71.40340555555557, 8);
+    const file = new File([tinyJpeg], 'IMG_0801.HEIC', { type: 'image/heic' });
+    const row = makeRow(tags, { file, path: 'IMG_0801.HEIC' }, 'full', 'apple', 'person', 'photo');
+    expect(row.longitude).toBeCloseTo(-71.40340555555557, 8);
+    expect(row.latitude).toBeCloseTo(41.82714444444445, 8);
   });
 
   it('marks rows ok when time or GPS exist, warning when they do not', () => {
