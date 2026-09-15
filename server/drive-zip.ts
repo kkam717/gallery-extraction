@@ -188,13 +188,24 @@ export function locateZipDirectory(tail: Uint8Array, fileSize: number): ZipDirec
   throw new Error('That file is not a ZIP archive, or the ZIP index is missing.');
 }
 
+type TokenSource = () => string;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForFreshToken(getToken: TokenSource, previous: string): Promise<boolean> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    if (getToken() && getToken() !== previous) return true;
+    await sleep(2_000);
+  }
+  return getToken() !== previous;
+}
+
 async function fetchByteRange(
   url: string,
-  token: string,
+  getToken: TokenSource,
   start: number,
   last: number,
   timeoutMs: number,
@@ -205,6 +216,7 @@ async function fetchByteRange(
     if (redirects > 5) {
       throw new Error('Google Drive redirected the ZIP read too many times.');
     }
+    const token = getToken();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -229,7 +241,14 @@ async function fetchByteRange(
         continue;
       }
       if (response.status === 401) {
-        throw new Error('Google Drive access expired. Allow access and try again.');
+        await response.body?.cancel();
+        if (await waitForFreshToken(getToken, token)) {
+          currentUrl = url;
+          redirects = 0;
+          attempt -= 1;
+          continue;
+        }
+        throw new Error('Google Drive access expired. Keep this tab open so access can refresh, then try again.');
       }
       if (response.status === 403) {
         throw new Error('Google Drive denied reading that ZIP. Select the takeout-*.zip files again.');
@@ -275,7 +294,7 @@ async function fetchByteRange(
 
 async function driveRange(
   fileId: string,
-  token: string,
+  getToken: TokenSource,
   start: number,
   endExclusive: number,
   timeoutMs = RANGE_TIMEOUT_MS,
@@ -285,7 +304,7 @@ async function driveRange(
   if (length <= 0) return new Uint8Array();
   const bytes = await fetchByteRange(
     driveMediaUrl(fileId),
-    token,
+    getToken,
     start,
     endExclusive - 1,
     timeoutMs,
@@ -297,39 +316,44 @@ async function driveRange(
   return bytes;
 }
 
-async function driveFileSize(fileId: string, token: string): Promise<number> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30_000);
-  try {
-    const response = await fetch(driveMetaUrl(fileId), {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    });
-    if (response.status === 401) {
-      throw new Error('Google Drive access expired. Allow access and try again.');
+async function driveFileSize(fileId: string, getToken: TokenSource): Promise<number> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const token = getToken();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const response = await fetch(driveMetaUrl(fileId), {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      if (response.status === 401) {
+        if (attempt < 2 && (await waitForFreshToken(getToken, token))) continue;
+        throw new Error('Google Drive access expired. Keep this tab open so access can refresh, then try again.');
+      }
+      if (!response.ok) {
+        throw new Error('Could not read the Takeout ZIP size from Google Drive.');
+      }
+      const body = (await response.json()) as { size?: string };
+      const size = Number(body.size || 0);
+      if (!Number.isFinite(size) || size <= 0) {
+        throw new Error('That Drive file has no size. Select the takeout-*.zip files themselves.');
+      }
+      return size;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Google Drive timed out while reading the ZIP size.');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
-    if (!response.ok) {
-      throw new Error('Could not read the Takeout ZIP size from Google Drive.');
-    }
-    const body = (await response.json()) as { size?: string };
-    const size = Number(body.size || 0);
-    if (!Number.isFinite(size) || size <= 0) {
-      throw new Error('That Drive file has no size. Select the takeout-*.zip files themselves.');
-    }
-    return size;
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('Google Drive timed out while reading the ZIP size.');
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
   }
+  throw new Error('Could not read the Takeout ZIP size from Google Drive.');
 }
 
 async function loadZipDirectory(
   fileId: string,
-  token: string,
+  getToken: TokenSource,
   size: number,
   progress: (update: ZipProgress) => void,
   zipName: string,
@@ -340,10 +364,10 @@ async function loadZipDirectory(
     completed: 0,
     total: 1,
   });
-  const tail = await driveRange(fileId, token, size - tailLength, size);
+  const tail = await driveRange(fileId, getToken, size - tailLength, size);
   let location = locateZipDirectory(tail, size);
   if (location.zip64EocdOffset != null && location.cdOffset < 0) {
-    const record = await driveRange(fileId, token, location.zip64EocdOffset, location.zip64EocdOffset + 4096);
+    const record = await driveRange(fileId, getToken, location.zip64EocdOffset, location.zip64EocdOffset + 4096);
     location = { ...location, ...parseZip64Eocd(record), zip64EocdOffset: undefined };
     if (location.cdSize > MAX_DIRECTORY_BYTES) {
       throw new Error('That Takeout ZIP index is too large to scan in the cloud.');
@@ -367,7 +391,7 @@ async function loadZipDirectory(
   });
   return {
     location: { ...location, cdOffset: prefetchStart },
-    bytes: await driveRange(fileId, token, prefetchStart, size, LARGE_RANGE_TIMEOUT_MS),
+    bytes: await driveRange(fileId, getToken, prefetchStart, size, LARGE_RANGE_TIMEOUT_MS),
   };
 }
 
@@ -546,6 +570,7 @@ async function extractEntries(
       }
       return file;
     } catch (error) {
+      if (error instanceof Error && /access expired/i.test(error.message)) throw error;
       console.warn(
         `[extract] skip ${entry.fileName}:`,
         error instanceof Error ? error.message : error,
@@ -580,17 +605,17 @@ export async function filesFromZipBytes(
 
 export async function filesFromDriveZip(
   file: DriveZipRef,
-  token: string,
+  getToken: TokenSource,
   progress: (update: ZipProgress) => void = () => undefined,
   onFile?: (input: InputFile, uncompressedSize: number) => Promise<void>,
   onListed?: (wanted: number) => void,
 ): Promise<InputFile[]> {
-  const size = await driveFileSize(file.id, token);
-  const directory = await loadZipDirectory(file.id, token, size, progress, file.name);
+  const size = await driveFileSize(file.id, getToken);
+  const directory = await loadZipDirectory(file.id, getToken, size, progress, file.name);
   const zip = await openZip(
     new PrefetchReader(
       [{ start: directory.location.cdOffset, bytes: directory.bytes }],
-      (start, endExclusive) => driveRange(file.id, token, start, endExclusive),
+      (start, endExclusive) => driveRange(file.id, getToken, start, endExclusive),
     ),
     size,
   );
@@ -599,7 +624,7 @@ export async function filesFromDriveZip(
     console.log(`[extract] ${file.name} listed ${entries.length} zip entries`);
     const files = await extractEntries(
       entries,
-      (start, length) => driveRange(file.id, token, start, start + length, RANGE_TIMEOUT_MS, true),
+      (start, length) => driveRange(file.id, getToken, start, start + length, RANGE_TIMEOUT_MS, true),
       progress,
       file.name,
       onFile,

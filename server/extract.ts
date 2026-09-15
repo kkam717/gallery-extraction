@@ -170,14 +170,14 @@ async function resolveZipFiles(request: ExtractRequest, token: string): Promise<
 }
 
 export async function extractDriveZips(
-  token: string,
+  getToken: () => string,
   request: ExtractRequest,
   progress: (update: ExtractProgress) => void,
 ): Promise<Result> {
-  if (!token) {
-    throw new Error('Google Drive access expired. Allow access and try again.');
+  if (!getToken()) {
+    throw new Error('Google Drive access expired. Keep this tab open so access can refresh, then try again.');
   }
-  const zips = await resolveZipFiles(request, token);
+  const zips = await resolveZipFiles(request, getToken());
   console.log(`[extract] resolved ${zips.length} zip(s): ${zips.map((file) => file.name).join(', ')}`);
   progress({
     phase: `Found ${zips.length.toLocaleString()} Takeout ZIP file${zips.length === 1 ? '' : 's'}`,
@@ -200,7 +200,7 @@ export async function extractDriveZips(
     });
     await filesFromDriveZip(
       file,
-      token,
+      getToken,
       progress,
       async (item, uncompressedSize) => {
         if (seen.has(item.path)) return;

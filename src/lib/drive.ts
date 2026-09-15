@@ -34,7 +34,7 @@ type GoogleApis = {
       initTokenClient: (config: {
         client_id: string;
         scope: string;
-        callback: (response: { access_token?: string; error?: string }) => void;
+        callback: (response: { access_token?: string; error?: string; expires_in?: number }) => void;
       }) => TokenClient;
     };
   };
@@ -139,12 +139,17 @@ async function loadGoogleLibraries(): Promise<GoogleApis> {
   return window.google;
 }
 
-function requestAccessToken(google: GoogleApis): Promise<string> {
+function requestAccessToken(google: GoogleApis, prompt?: string, timeoutMs = 0): Promise<string> {
   return new Promise((resolve, reject) => {
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => reject(new Error('Google Drive access timed out.')), timeoutMs)
+        : undefined;
     const client = google.accounts.oauth2.initTokenClient({
       client_id: clientId(),
       scope: DRIVE_SCOPE,
       callback: (response) => {
+        if (timer) clearTimeout(timer);
         if (response.error || !response.access_token) {
           reject(
             new Error(
@@ -156,7 +161,8 @@ function requestAccessToken(google: GoogleApis): Promise<string> {
         resolve(response.access_token);
       },
     });
-    client.requestAccessToken();
+    if (prompt === undefined) client.requestAccessToken();
+    else client.requestAccessToken({ prompt });
   });
 }
 
@@ -385,8 +391,28 @@ export async function extractDriveZipsRemote(
     progress(update);
   };
   let jobId = '';
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  const google = await loadGoogleLibraries();
+  const pushToken = async () => {
+    if (!jobId || signal?.aborted) return;
+    try {
+      const next = await requestAccessToken(google, '', 15_000);
+      await fetch(`${api}/extract/${jobId}/token`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${next}` },
+        signal,
+      });
+    } catch {
+      // The current Drive token may still be valid until the next refresh.
+    }
+  };
   const rememberJob = (id: string) => {
     jobId = id;
+    if (!refreshTimer) {
+      refreshTimer = setInterval(() => {
+        void pushToken();
+      }, 35 * 60 * 1000);
+    }
   };
   const openStream = async (url: string, init: RequestInit): Promise<DriveExtractResult | null> => {
     const response = await fetch(url, { ...init, signal });
@@ -408,52 +434,56 @@ export async function extractDriveZipsRemote(
 
   let result: DriveExtractResult | null = null;
   try {
-    result = await openStream(`${api}/extract`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        files: selection.files,
-        folders: selection.folders ?? [],
-        mode,
-        source,
-      }),
-    });
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    if (error instanceof Error && /no longer available|not granted|not configured|not allowed/i.test(error.message)) {
-      throw error;
-    }
-    if (!jobId) throw new Error(driveConnectionError(error));
-  }
-
-  while (!result) {
-    if (signal?.aborted) {
-      throw new Error('The Drive extraction was cancelled.');
-    }
-    if (!jobId) {
-      throw new Error('The cloud extractor lost its connection. Keep this tab open and try again.');
-    }
-    progress({
-      phase: 'Reconnecting to the cloud extractor…',
-      completed: lastProgress.completed,
-      total: lastProgress.total,
-    });
     try {
-      await sleep(1000);
-      result = await openStream(`${api}/extract/${jobId}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
+      result = await openStream(`${api}/extract`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          files: selection.files,
+          folders: selection.folders ?? [],
+          mode,
+          source,
+        }),
       });
     } catch (error) {
       if (signal?.aborted) throw error;
-      if (error instanceof Error && /no longer available/i.test(error.message)) throw error;
-      if (error instanceof Error && !(error instanceof TypeError) && !/failed to fetch|network error|load failed/i.test(error.message)) {
+      if (error instanceof Error && /no longer available|not granted|not configured|not allowed/i.test(error.message)) {
         throw error;
       }
+      if (!jobId) throw new Error(driveConnectionError(error));
     }
+
+    while (!result) {
+      if (signal?.aborted) {
+        throw new Error('The Drive extraction was cancelled.');
+      }
+      if (!jobId) {
+        throw new Error('The cloud extractor lost its connection. Keep this tab open and try again.');
+      }
+      progress({
+        phase: 'Reconnecting to the cloud extractor…',
+        completed: lastProgress.completed,
+        total: lastProgress.total,
+      });
+      try {
+        await sleep(1000);
+        result = await openStream(`${api}/extract/${jobId}`, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        if (error instanceof Error && /no longer available/i.test(error.message)) throw error;
+        if (error instanceof Error && !(error instanceof TypeError) && !/failed to fetch|network error|load failed/i.test(error.message)) {
+          throw error;
+        }
+      }
+    }
+    return result;
+  } finally {
+    if (refreshTimer) clearInterval(refreshTimer);
   }
-  return result;
 }

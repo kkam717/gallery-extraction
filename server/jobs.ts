@@ -7,6 +7,7 @@ export type JobStatus = 'running' | 'done' | 'error';
 export type ExtractJob = {
   id: string;
   status: JobStatus;
+  token: string;
   progress: ExtractProgress;
   result?: Result;
   error?: string;
@@ -16,11 +17,12 @@ export type ExtractJob = {
 const jobs = new Map<string, ExtractJob>();
 const JOB_TTL_MS = 6 * 60 * 60 * 1000;
 
-export function createJob(): ExtractJob {
+export function createJob(token: string): ExtractJob {
   pruneJobs();
   const job: ExtractJob = {
     id: randomUUID(),
     status: 'running',
+    token,
     progress: { phase: 'Starting cloud extraction…', completed: 0, total: 1 },
     createdAt: Date.now(),
   };
@@ -30,6 +32,10 @@ export function createJob(): ExtractJob {
 
 export function getJob(id: string): ExtractJob | undefined {
   return jobs.get(id);
+}
+
+export function setJobToken(job: ExtractJob, token: string): void {
+  if (token) job.token = token;
 }
 
 export function setJobProgress(job: ExtractJob, progress: ExtractProgress): void {

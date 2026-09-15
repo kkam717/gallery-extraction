@@ -7,6 +7,7 @@ import {
   finishJob,
   getJob,
   setJobProgress,
+  setJobToken,
   type ExtractJob,
 } from './jobs';
 
@@ -69,8 +70,8 @@ function writeEvent(res: ServerResponse, payload: unknown): boolean {
   return res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function startExtract(job: ExtractJob, token: string, request: ReturnType<typeof parseExtractRequest>): void {
-  void extractDriveZips(token, request, (progress) => {
+function startExtract(job: ExtractJob, request: ReturnType<typeof parseExtractRequest>): void {
+  void extractDriveZips(() => job.token, request, (progress) => {
     setJobProgress(job, progress);
   })
     .then((result) => {
@@ -147,9 +148,9 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   }
   const token = bearerToken(req);
   const request = parseExtractRequest(await readJson(req));
-  const job = createJob();
+  const job = createJob(token);
   console.log(`[extract] job ${job.id} started`);
-  startExtract(job, token, request);
+  startExtract(job, request);
   await streamJob(job, req, res);
 }
 
@@ -178,6 +179,23 @@ const server = createServer((req, res) => {
     }
     if (req.method === 'POST' && path === '/extract') {
       await handleExtract(req, res);
+      return;
+    }
+    const tokenMatch = /^\/extract\/([^/]+)\/token$/.exec(path);
+    if (req.method === 'POST' && tokenMatch?.[1] && JOB_ID.test(tokenMatch[1])) {
+      const origin = requestOrigin(req);
+      if (req.headers.origin && !origin) {
+        sendJson(res, 403, { message: 'This site is not allowed to use the extractor.' });
+        return;
+      }
+      const job = getJob(tokenMatch[1]);
+      const token = bearerToken(req);
+      if (!job || job.status !== 'running' || !token) {
+        sendJson(res, 404, { message: 'That extract job is no longer available. Start it again.' });
+        return;
+      }
+      setJobToken(job, token);
+      sendJson(res, 200, { ok: true });
       return;
     }
     const jobMatch = /^\/extract\/([^/]+)$/.exec(path);
