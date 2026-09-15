@@ -1,5 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extractDriveZips, parseExtractRequest } from './extract';
+import {
+  JOB_ID,
+  createJob,
+  failJob,
+  finishJob,
+  getJob,
+  setJobProgress,
+  type ExtractJob,
+} from './jobs';
 
 const PORT = Number(process.env.PORT || 8080);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
@@ -55,8 +64,79 @@ function bearerToken(req: IncomingMessage): string {
   return header.slice('Bearer '.length).trim();
 }
 
-function writeEvent(res: ServerResponse, payload: unknown): void {
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+function writeEvent(res: ServerResponse, payload: unknown): boolean {
+  if (res.writableEnded || res.destroyed) return false;
+  return res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function startExtract(job: ExtractJob, token: string, request: ReturnType<typeof parseExtractRequest>): void {
+  void extractDriveZips(token, request, (progress) => {
+    setJobProgress(job, progress);
+  })
+    .then((result) => {
+      finishJob(job, result);
+      console.log(`[extract] job ${job.id} done`);
+    })
+    .catch((error: unknown) => {
+      const message =
+        error instanceof Error ? error.message : 'The Drive export could not be processed.';
+      console.error(`[extract] job ${job.id} failed`, error);
+      failJob(job, message);
+    });
+}
+
+async function streamJob(job: ExtractJob, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  req.setTimeout(0);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(`:${' '.repeat(2048)}\n\n`);
+  writeEvent(res, { type: 'job', jobId: job.id });
+  writeEvent(res, { type: 'progress', ...job.progress });
+
+  let closed = false;
+  const onClose = () => {
+    closed = true;
+  };
+  req.on('close', onClose);
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(': keepalive\n\n');
+  }, 5_000);
+
+  try {
+    let last = '';
+    while (!closed && job.status === 'running') {
+      const next = JSON.stringify(job.progress);
+      if (next !== last) {
+        last = next;
+        if (!writeEvent(res, { type: 'progress', ...job.progress })) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (closed) return;
+    if (job.status === 'error') {
+      writeEvent(res, {
+        type: 'error',
+        message: job.error || 'The Drive export could not be processed.',
+      });
+      return;
+    }
+    if (job.status === 'done' && job.result) {
+      writeEvent(res, {
+        type: 'done',
+        archive: Buffer.from(job.result.archive).toString('base64'),
+        rows: job.result.rows,
+        manifest: job.result.manifest,
+      });
+    }
+  } finally {
+    clearInterval(heartbeat);
+    req.off('close', onClose);
+    if (!res.writableEnded) res.end();
+  }
 }
 
 async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -67,49 +147,42 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   }
   const token = bearerToken(req);
   const request = parseExtractRequest(await readJson(req));
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-  const heartbeat = setInterval(() => {
-    res.write(': keepalive\n\n');
-  }, 15_000);
-  try {
-    const result = await extractDriveZips(token, request, (progress) => {
-      writeEvent(res, { type: 'progress', ...progress });
-    });
-    writeEvent(res, {
-      type: 'done',
-      archive: Buffer.from(result.archive).toString('base64'),
-      rows: result.rows,
-      manifest: result.manifest,
-    });
-  } catch (error) {
-    writeEvent(res, {
-      type: 'error',
-      message:
-        error instanceof Error
-          ? error.message
-          : 'The Drive export could not be processed.',
-    });
-  } finally {
-    clearInterval(heartbeat);
-    res.end();
+  const job = createJob();
+  console.log(`[extract] job ${job.id} started`);
+  startExtract(job, token, request);
+  await streamJob(job, req, res);
+}
+
+async function handleJob(req: IncomingMessage, res: ServerResponse, jobId: string): Promise<void> {
+  const origin = requestOrigin(req);
+  if (req.headers.origin && !origin) {
+    sendJson(res, 403, { message: 'This site is not allowed to use the extractor.' });
+    return;
   }
+  const job = getJob(jobId);
+  if (!job) {
+    sendJson(res, 404, { message: 'That extract job is no longer available. Start it again.' });
+    return;
+  }
+  await streamJob(job, req, res);
 }
 
 const server = createServer((req, res) => {
   void (async () => {
     if (applyCors(req, res)) return;
-    const path = new URL(req.url || '/', 'http://extractor.local').pathname;
+    const url = new URL(req.url || '/', 'http://extractor.local');
+    const path = url.pathname;
     if (req.method === 'GET' && (path === '/' || path === '/health')) {
       sendJson(res, 200, { ok: true });
       return;
     }
     if (req.method === 'POST' && path === '/extract') {
       await handleExtract(req, res);
+      return;
+    }
+    const jobMatch = /^\/extract\/([^/]+)$/.exec(path);
+    if (req.method === 'GET' && jobMatch?.[1] && JOB_ID.test(jobMatch[1])) {
+      await handleJob(req, res, jobMatch[1]);
       return;
     }
     sendJson(res, 404, { message: 'Not found.' });
@@ -121,10 +194,11 @@ const server = createServer((req, res) => {
       });
       return;
     }
-    res.end();
+    if (!res.writableEnded) res.end();
   });
 });
 
+server.timeout = 0;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`extract api listening on ${PORT}`);
 });

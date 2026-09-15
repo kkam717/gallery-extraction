@@ -170,27 +170,67 @@ export async function readMetadata(file: File): Promise<Record<string, unknown>>
   const raw = await readFileMetadata(file);
   return clean(raw);
 }
-export async function createDataset(
-  files: InputFile[],
+export type ParsedMediaFile = {
+  path: string;
+  fileBytes: number;
+  raw: Record<string, unknown>;
+  failed: boolean;
+};
+export type ParsedSidecarFile = {
+  path: string;
+  kind: string;
+  metadata: Record<string, unknown>;
+  error: string | null;
+};
+export async function parseMediaInput(file: InputFile, fileBytes = file.file.size): Promise<ParsedMediaFile> {
+  try {
+    return { path: file.path, fileBytes, raw: await readMetadata(file.file), failed: false };
+  } catch {
+    return { path: file.path, fileBytes, raw: {}, failed: true };
+  }
+}
+export async function parseSidecarInput(file: InputFile): Promise<ParsedSidecarFile> {
+  const kind = extension(file.path);
+  try {
+    if (file.file.size > 10 * 1024 * 1024) throw new Error('Sidecar exceeds the 10 MB limit');
+    if (kind === 'json') {
+      const data = JSON.parse((await file.file.text()).replace(/^\uFEFF/, '')) as unknown;
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('Sidecar must be a JSON object');
+      }
+      return { path: file.path, kind, metadata: data as Record<string, unknown>, error: null };
+    }
+    return { path: file.path, kind, metadata: await readMetadata(file.file), error: null };
+  } catch (error) {
+    return {
+      path: file.path,
+      kind,
+      metadata: {},
+      error: error instanceof Error ? error.message : 'Could not read sidecar',
+    };
+  }
+}
+export async function createDatasetFromParsed(
+  media: ParsedMediaFile[],
+  sidecarFiles: ParsedSidecarFile[],
   mode: Mode,
   source: string,
   progress: (p: ProgressUpdate) => void,
   sqliteLocate = (name: string) => runtimeAsset(`runtime/${name}`),
+  options: { ignoredFiles?: number; maxAccountBytes?: number } = {},
 ): Promise<Result> {
-  const media = files.filter(isMedia),
-    sidecarFiles = files.filter(isSidecar);
   if (!media.length)
     throw new Error(
       'No supported photos or videos found. Choose photos, an unzipped export folder, or Google Takeout ZIP files.',
     );
   const contributor = crypto.randomUUID();
   const mediaIds = new Map(media.map((f) => [f.path, crypto.randomUUID()]));
-  const byName = new Map<string, InputFile[]>(),
-    byStem = new Map<string, InputFile[]>();
-  for (const f of media) {
-    byName.set(f.path, [...(byName.get(f.path) || []), f]);
-    const k = stem(f.path);
-    byStem.set(k, [...(byStem.get(k) || []), f]);
+  const byName = new Map<string, ParsedMediaFile[]>();
+  const byStem = new Map<string, ParsedMediaFile[]>();
+  for (const file of media) {
+    byName.set(file.path, [...(byName.get(file.path) || []), file]);
+    const key = stem(file.path);
+    byStem.set(key, [...(byStem.get(key) || []), file]);
   }
   type Sidecar = {
     sidecar_id: string;
@@ -201,79 +241,58 @@ export async function createDataset(
     metadata: Record<string, unknown>;
     error: string | null;
   };
-  const sidecars: Sidecar[] = [],
-    matched = new Map<string, Sidecar[]>();
+  const sidecars: Sidecar[] = [];
+  const matched = new Map<string, Sidecar[]>();
   let bytes = 0;
+  const maxAccountBytes = options.maxAccountBytes ?? 400 * 1024 * 1024;
   const account = (obj: unknown) => {
     bytes += JSON.stringify(obj).length * 2;
-    if (bytes > 400 * 1024 * 1024)
+    if (bytes > maxAccountBytes)
       throw new Error(
-        'This export contains too much metadata for one browser download. Choose smaller folders and run them separately.',
+        'This export contains too much metadata for one download. Choose smaller folders and run them separately.',
       );
   };
   const total = media.length + sidecarFiles.length;
   let completed = 0;
-  progress({ phase: 'Reading file headers…', completed, total });
-  for (const f of sidecarFiles) {
-      const sidecar: Sidecar = {
-        sidecar_id: crypto.randomUUID(),
-        file_name: mode === 'full' ? base(f.path) : null,
-        kind: extension(f.path),
-        status: 'unmatched',
-        candidate_photo_ids: [],
-        metadata: {},
-        error: null,
-      };
-      let data: Record<string, unknown> = {};
-      let candidates: InputFile[] = [];
-      try {
-        if (f.file.size > 10 * 1024 * 1024)
-          throw new Error('Sidecar exceeds the 10 MB limit');
-        if (extension(f.path) === 'json') {
-          data = JSON.parse((await f.file.text()).replace(/^\uFEFF/, ''));
-          if (!data || typeof data !== 'object' || Array.isArray(data))
-            throw new Error('Sidecar must be a JSON object');
-          candidates =
-            byName.get(f.path.slice(0, -5)) ||
-            byName.get(f.path.replace(/\.supplemental-metadata\.json$/, '')) ||
-            [];
-          if (!candidates.length && typeof data.title === 'string')
-            candidates = byName.get(parent(f.path) + data.title) || [];
-        } else {
-          data = await readMetadata(f.file);
-          candidates =
-            byName.get(stem(f.path)) || byStem.get(stem(f.path)) || [];
+  for (const file of sidecarFiles) {
+    const sidecar: Sidecar = {
+      sidecar_id: crypto.randomUUID(),
+      file_name: mode === 'full' ? base(file.path) : null,
+      kind: file.kind,
+      status: file.error ? 'error' : 'unmatched',
+      candidate_photo_ids: [],
+      metadata: file.metadata,
+      error: file.error,
+    };
+    if (!file.error) {
+      let candidates: ParsedMediaFile[] = [];
+      if (file.kind === 'json') {
+        candidates =
+          byName.get(file.path.slice(0, -5)) ||
+          byName.get(file.path.replace(/\.supplemental-metadata\.json$/, '')) ||
+          [];
+        if (!candidates.length && typeof file.metadata.title === 'string') {
+          candidates = byName.get(parent(file.path) + file.metadata.title) || [];
         }
-        sidecar.candidate_photo_ids = candidates.map((c) =>
-          mediaIds.get(c.path)!,
-        );
-        sidecar.status =
-          candidates.length === 1
-            ? 'matched'
-            : candidates.length
-              ? 'ambiguous'
-              : 'unmatched';
-        sidecar.metadata = data;
-        if (candidates.length === 1)
-          matched.set(candidates[0].path, [
-            ...(matched.get(candidates[0].path) || []),
-            sidecar,
-          ]);
-      } catch (error) {
-        sidecar.status = 'error';
-        sidecar.error =
-          error instanceof Error ? error.message : 'Could not read sidecar';
+      } else {
+        candidates = byName.get(stem(file.path)) || byStem.get(stem(file.path)) || [];
       }
-      // Retain raw sidecars only internally until date normalization, then strip in limited output.
-      account(sidecar);
-      sidecars.push(sidecar);
-      progress({
-        phase: 'Reading supplementary metadata…',
-        completed: ++completed,
-        total,
-      });
-      if (completed % 8 === 0) await yieldThread();
+      sidecar.candidate_photo_ids = candidates.map((candidate) => mediaIds.get(candidate.path)!);
+      sidecar.status =
+        candidates.length === 1 ? 'matched' : candidates.length ? 'ambiguous' : 'unmatched';
+      if (candidates.length === 1) {
+        matched.set(candidates[0]!.path, [...(matched.get(candidates[0]!.path) || []), sidecar]);
+      }
     }
+    account(sidecar);
+    sidecars.push(sidecar);
+    progress({
+      phase: 'Matching supplementary metadata…',
+      completed: ++completed,
+      total,
+    });
+    if (completed % 32 === 0) await yieldThread();
+  }
     const SQL = await initSqlJs({ locateFile: sqliteLocate });
     const db = new SQL.Database();
     try {
@@ -299,22 +318,16 @@ export async function createDataset(
       const missing: Record<string, number> = {},
         statuses: Record<string, number> = {};
       for (const f of media) {
-        let raw: Record<string, unknown> = {};
-        let failed = false;
-        try {
-          raw = await readMetadata(f.file);
-        } catch {
-          failed = true;
-        }
+        const raw = f.raw;
         const row = makeRow(
           raw,
-          f,
+          { path: f.path, file: { size: f.fileBytes } as File },
           mode,
           source,
           contributor,
           mediaIds.get(f.path)!,
         );
-        if (failed) row.status = 'error';
+        if (f.failed) row.status = 'error';
         const attachments = matched.get(f.path) || [];
         row.sidecar_count = attachments.length;
         const times = new Set<string>();
@@ -344,11 +357,11 @@ export async function createDataset(
           if (row[key] == null) missing[key] = (missing[key] || 0) + 1;
         rows.push(row);
         progress({
-          phase: 'Extracting photo metadata…',
+          phase: 'Writing photo records…',
           completed: ++completed,
           total,
         });
-        if (completed % 8 === 0) await yieldThread();
+        if (completed % 32 === 0) await yieldThread();
       }
       insert.free();
       const exportedSidecars = sidecars.map((s) => ({
@@ -379,7 +392,7 @@ export async function createDataset(
         extractor: 'EXIF IFDs (DateTimeOriginal + GPS tags 1-6)',
         media_files: media.length,
         sidecar_files: sidecars.length,
-        ignored_files: files.length - media.length - sidecars.length,
+        ignored_files: options.ignoredFiles ?? 0,
         status_counts: statuses,
         sidecar_status_counts: sidecarCounts,
         missing_or_omitted_fields: missing,
@@ -419,6 +432,52 @@ export async function createDataset(
     } finally {
       db.close();
     }
+}
+export async function createDataset(
+  files: InputFile[],
+  mode: Mode,
+  source: string,
+  progress: (p: ProgressUpdate) => void,
+  sqliteLocate = (name: string) => runtimeAsset(`runtime/${name}`),
+): Promise<Result> {
+  const mediaFiles = files.filter(isMedia);
+  const sidecarFiles = files.filter(isSidecar);
+  if (!mediaFiles.length)
+    throw new Error(
+      'No supported photos or videos found. Choose photos, an unzipped export folder, or Google Takeout ZIP files.',
+    );
+  const total = mediaFiles.length + sidecarFiles.length;
+  let completed = 0;
+  progress({ phase: 'Reading file headers…', completed, total });
+  const parsedSidecars: ParsedSidecarFile[] = [];
+  for (const file of sidecarFiles) {
+    parsedSidecars.push(await parseSidecarInput(file));
+    progress({
+      phase: 'Reading supplementary metadata…',
+      completed: ++completed,
+      total,
+    });
+    if (completed % 8 === 0) await yieldThread();
+  }
+  const parsedMedia: ParsedMediaFile[] = [];
+  for (const file of mediaFiles) {
+    parsedMedia.push(await parseMediaInput(file));
+    progress({
+      phase: 'Extracting photo metadata…',
+      completed: ++completed,
+      total,
+    });
+    if (completed % 8 === 0) await yieldThread();
+  }
+  return createDatasetFromParsed(
+    parsedMedia,
+    parsedSidecars,
+    mode,
+    source,
+    progress,
+    sqliteLocate,
+    { ignoredFiles: files.length - mediaFiles.length - sidecarFiles.length },
+  );
 }
 export const QUERIES = `-- Count files by camera (repeated export copies are included).
 SELECT camera_model, COUNT(*) AS files FROM photos GROUP BY camera_model ORDER BY files DESC;

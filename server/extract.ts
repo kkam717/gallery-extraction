@@ -1,5 +1,15 @@
 import { createRequire } from 'node:module';
-import { createDataset, type Mode, type Result } from '../src/lib/dataset';
+import {
+  createDatasetFromParsed,
+  isMedia,
+  isSidecar,
+  parseMediaInput,
+  parseSidecarInput,
+  type Mode,
+  type ParsedMediaFile,
+  type ParsedSidecarFile,
+  type Result,
+} from '../src/lib/dataset';
 import { isZipFile, isZipName } from '../src/lib/takeout';
 import { filesFromDriveZip } from './drive-zip';
 
@@ -168,39 +178,77 @@ export async function extractDriveZips(
     throw new Error('Google Drive access expired. Allow access and try again.');
   }
   const zips = await resolveZipFiles(request, token);
+  console.log(`[extract] resolved ${zips.length} zip(s): ${zips.map((file) => file.name).join(', ')}`);
   progress({
     phase: `Found ${zips.length.toLocaleString()} Takeout ZIP file${zips.length === 1 ? '' : 's'}`,
     completed: 0,
     total: zips.length,
   });
-  const collected = [];
+  const media: ParsedMediaFile[] = [];
+  const sidecars: ParsedSidecarFile[] = [];
   const seen = new Set<string>();
-  for (const [index, file] of zips.entries()) {
+  let parsed = 0;
+  let listed = 0;
+  for (const file of zips) {
     if (!isZipFile(new File([], file.name, { type: 'application/zip' }))) {
       throw new Error(`${file.name} is not a ZIP file.`);
     }
     progress({
       phase: `Reading ${file.name} from Drive…`,
-      completed: index,
-      total: zips.length,
+      completed: parsed,
+      total: Math.max(listed, 1),
     });
-    const unpacked = await filesFromDriveZip(file, token, progress);
-    for (const item of unpacked) {
-      if (seen.has(item.path)) continue;
-      seen.add(item.path);
-      collected.push(item);
-    }
+    await filesFromDriveZip(
+      file,
+      token,
+      progress,
+      async (item, uncompressedSize) => {
+        if (seen.has(item.path)) return;
+        seen.add(item.path);
+        if (isSidecar(item)) {
+          sidecars.push(await parseSidecarInput(item));
+        } else if (isMedia(item)) {
+          media.push(await parseMediaInput(item, uncompressedSize || item.file.size));
+        } else {
+          return;
+        }
+        parsed += 1;
+        if (parsed % 8 === 0 || parsed === listed) {
+          progress({
+            phase: `Reading photos in ${file.name}…`,
+            completed: parsed,
+            total: Math.max(listed, parsed),
+          });
+        }
+        if (parsed % 100 === 0) {
+          console.log(
+            `[extract] parsed ${media.length} media, ${sidecars.length} sidecars, rss=${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
+          );
+        }
+      },
+      (wanted) => {
+        listed += wanted;
+        progress({
+          phase: `Found ${listed.toLocaleString()} files across Takeout ZIPs…`,
+          completed: parsed,
+          total: Math.max(listed, 1),
+        });
+      },
+    );
   }
-  if (!collected.length) {
+  console.log(`[extract] finished parsing ${media.length} media, ${sidecars.length} sidecars`);
+  if (!media.length) {
     throw new Error(
       'Those ZIP files did not contain supported photos, videos, or sidecar metadata.',
     );
   }
-  return createDataset(
-    collected,
+  return createDatasetFromParsed(
+    media,
+    sidecars,
     request.mode,
     request.source,
     progress,
     sqliteFile,
+    { maxAccountBytes: 2 * 1024 * 1024 * 1024 },
   );
 }

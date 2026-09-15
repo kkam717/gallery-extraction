@@ -270,50 +270,37 @@ export async function pickDriveTakeoutZips(
   };
 }
 
-export async function extractDriveZipsRemote(
-  token: string,
-  selection: { files: DriveZipRef[]; folders?: DriveZipRef[] },
-  mode: Mode,
-  source: string,
-  progress: (update: DriveProgress) => void = () => undefined,
-  signal?: AbortSignal,
-): Promise<DriveExtractResult> {
-  const api = extractApiUrl();
-  if (!api) {
-    throw new Error('Drive extraction is not configured for this site.');
+function driveConnectionError(error: unknown): string {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return 'The Drive extraction was cancelled.';
   }
-  const fileCount = selection.files.length;
-  progress({
-    phase: selection.folders?.length
-      ? 'Reading the Takeout folder in Drive…'
-      : 'Starting cloud extraction…',
-    completed: 0,
-    total: fileCount || 1,
-  });
-  const response = await fetch(`${api}/extract`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      files: selection.files,
-      folders: selection.folders ?? [],
-      mode,
-      source,
-    }),
-    signal,
-  });
-  if (!response.ok) {
-    let message = 'The Drive export could not be processed in the cloud.';
-    try {
-      const body = (await response.json()) as { message?: string };
-      if (body.message) message = body.message;
-    } catch {
-      // Keep the generic error when the extractor does not return JSON.
-    }
-    throw new Error(message);
+  const message = error instanceof Error ? error.message : '';
+  if (
+    error instanceof TypeError ||
+    /failed to fetch|network error|load failed|networkerror/i.test(message)
+  ) {
+    return 'The cloud extractor lost its connection. Keep this tab open and try again.';
   }
+  return message || 'The Drive export could not be processed in the cloud.';
+}
+
+type SsePayload = {
+  type?: string;
+  jobId?: string;
+  phase?: string;
+  completed?: number;
+  total?: number;
+  message?: string;
+  archive?: string;
+  rows?: Row[];
+  manifest?: Record<string, unknown>;
+};
+
+async function readExtractStream(
+  response: Response,
+  progress: (update: DriveProgress) => void,
+  onJob: (jobId: string) => void,
+): Promise<DriveExtractResult | null> {
   if (!response.body) {
     throw new Error('The Drive extractor returned no data.');
   }
@@ -327,20 +314,18 @@ export async function extractDriveZipsRemote(
     const messages = buffer.split('\n\n');
     buffer = done ? '' : (messages.pop() ?? '');
     for (const message of messages) {
-      const line = message
-        .split('\n')
-        .find((entry) => entry.startsWith('data: '));
+      const line = message.split('\n').find((entry) => entry.startsWith('data: '));
       if (!line) continue;
-      const payload = JSON.parse(line.slice(6)) as {
-        type?: string;
-        phase?: string;
-        completed?: number;
-        total?: number;
-        message?: string;
-        archive?: string;
-        rows?: Row[];
-        manifest?: Record<string, unknown>;
-      };
+      let payload: SsePayload;
+      try {
+        payload = JSON.parse(line.slice(6)) as SsePayload;
+      } catch {
+        continue;
+      }
+      if (payload.type === 'job' && payload.jobId) {
+        onJob(payload.jobId);
+        continue;
+      }
       if (payload.type === 'progress') {
         progress({
           phase: payload.phase || 'Extracting…',
@@ -363,8 +348,112 @@ export async function extractDriveZipsRemote(
     }
     if (done) break;
   }
-  if (!result) {
-    throw new Error('The Drive extractor closed before finishing.');
+  return result;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function extractDriveZipsRemote(
+  token: string,
+  selection: { files: DriveZipRef[]; folders?: DriveZipRef[] },
+  mode: Mode,
+  source: string,
+  progress: (update: DriveProgress) => void = () => undefined,
+  signal?: AbortSignal,
+): Promise<DriveExtractResult> {
+  const api = extractApiUrl();
+  if (!api) {
+    throw new Error('Drive extraction is not configured for this site.');
+  }
+  const fileCount = selection.files.length;
+  progress({
+    phase: selection.folders?.length
+      ? 'Reading the Takeout folder in Drive…'
+      : 'Starting cloud extraction…',
+    completed: 0,
+    total: fileCount || 1,
+  });
+  let lastProgress: DriveProgress = {
+    phase: 'Starting cloud extraction…',
+    completed: 0,
+    total: fileCount || 1,
+  };
+  const report = (update: DriveProgress) => {
+    lastProgress = update;
+    progress(update);
+  };
+  let jobId = '';
+  const rememberJob = (id: string) => {
+    jobId = id;
+  };
+  const openStream = async (url: string, init: RequestInit): Promise<DriveExtractResult | null> => {
+    const response = await fetch(url, { ...init, signal });
+    if (response.status === 404) {
+      throw new Error('That extract job is no longer available. Start it again.');
+    }
+    if (!response.ok) {
+      let message = 'The Drive export could not be processed in the cloud.';
+      try {
+        const body = (await response.json()) as { message?: string };
+        if (body.message) message = body.message;
+      } catch {
+        // Keep the generic error when the extractor does not return JSON.
+      }
+      throw new Error(message);
+    }
+    return readExtractStream(response, report, rememberJob);
+  };
+
+  let result: DriveExtractResult | null = null;
+  try {
+    result = await openStream(`${api}/extract`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        files: selection.files,
+        folders: selection.folders ?? [],
+        mode,
+        source,
+      }),
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (error instanceof Error && /no longer available|not granted|not configured|not allowed/i.test(error.message)) {
+      throw error;
+    }
+    if (!jobId) throw new Error(driveConnectionError(error));
+  }
+
+  while (!result) {
+    if (signal?.aborted) {
+      throw new Error('The Drive extraction was cancelled.');
+    }
+    if (!jobId) {
+      throw new Error('The cloud extractor lost its connection. Keep this tab open and try again.');
+    }
+    progress({
+      phase: 'Reconnecting to the cloud extractor…',
+      completed: lastProgress.completed,
+      total: lastProgress.total,
+    });
+    try {
+      await sleep(1000);
+      result = await openStream(`${api}/extract/${jobId}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error instanceof Error && /no longer available/i.test(error.message)) throw error;
+      if (error instanceof Error && !(error instanceof TypeError) && !/failed to fetch|network error|load failed/i.test(error.message)) {
+        throw error;
+      }
+    }
   }
   return result;
 }
