@@ -256,7 +256,7 @@ p {
 }
 
 .dropzone p {
-  max-width: 390px;
+  max-width: 420px;
   font-size: 14px;
 }
 
@@ -266,6 +266,11 @@ p {
   gap: 10px;
   justify-content: center;
   margin: 21px 0 11px;
+}
+
+.chooser-row .primary {
+  width: 100%;
+  max-width: 360px;
 }
 
 .primary {
@@ -394,6 +399,10 @@ p {
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
+}
+
+.help details + details {
+  margin-top: 16px;
 }
 
 .help p {
@@ -568,6 +577,18 @@ p {
   .actionbar {
     padding: 20px;
     flex-wrap: wrap;
+  }
+
+  .actionbar .primary,
+  .chooser-row .primary,
+  .chooser-row .secondary {
+    width: 100%;
+    max-width: none;
+  }
+
+  .dropzone {
+    min-height: 0;
+    padding: 22px 16px;
   }
 
   .source-options {

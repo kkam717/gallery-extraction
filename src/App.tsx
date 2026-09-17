@@ -14,6 +14,7 @@ import {
   LockKeyhole,
   RotateCcw,
   ShieldCheck,
+  Smartphone,
   Table2,
 } from 'lucide-react';
 import { Progress, ProgressLabel } from '@/components/ui/progress';
@@ -27,13 +28,17 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
-  isMedia,
-  isSidecar,
   type InputFile,
   type Mode,
   type Row,
 } from '@/lib/dataset';
 import { extractDriveZipsRemote, pickDriveTakeoutZips } from '@/lib/drive';
+import {
+  emptyLibrary,
+  mergeLibraries,
+  parseGalleryItems,
+  type StagedLibrary,
+} from '@/lib/gallery';
 import { filesFromTakeoutZips, isZipFile } from '@/lib/takeout';
 
 type WorkerProgress = { phase: string; completed: number; total: number };
@@ -73,12 +78,14 @@ function downloadArchive(archive: Uint8Array) {
 export default function App() {
   const folderInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const galleryInput = useRef<HTMLInputElement>(null);
   const zipInput = useRef<HTMLInputElement>(null);
   const worker = useRef<Worker | null>(null);
   const ingestId = useRef(0);
   const ingestAbort = useRef<AbortController | null>(null);
+  const seenGalleryKeys = useRef(new Set<string>());
   const [cloudRun, setCloudRun] = useState(false);
-  const [files, setFiles] = useState<InputFile[]>([]);
+  const [library, setLibrary] = useState<StagedLibrary>(emptyLibrary);
   const [mode, setMode] = useState<Mode>('full');
   const [source, setSource] = useState('mixed');
   const [dragging, setDragging] = useState(false);
@@ -88,51 +95,68 @@ export default function App() {
 
   const counts = useMemo(
     () => ({
-      media: files.filter(isMedia).length,
-      sidecars: files.filter(isSidecar).length,
-      ignored: files.filter((file) => !isMedia(file) && !isSidecar(file)).length,
+      media: library.media.length,
+      sidecars: library.sidecars.length,
     }),
-    [files],
+    [library],
   );
 
-  function selectFiles(selected: InputFile[]) {
-    setFiles(selected);
+  function resetLibraryState() {
+    seenGalleryKeys.current = new Set();
+    setLibrary(emptyLibrary());
     setError(null);
     setResult(null);
     setProgress(null);
     setCloudRun(false);
   }
 
-  async function ingestFiles(selected: InputFile[]) {
+  async function ingestFiles(selected: InputFile[], append = true) {
     const id = ++ingestId.current;
     const zips = selected.filter((item) => isZipFile(item.file));
     const rest = selected.filter((item) => !isZipFile(item.file));
     setError(null);
     setResult(null);
-    if (!zips.length) {
-      selectFiles(selected);
-      return;
-    }
-    setProgress({
-      phase: 'Reading Takeout ZIP files…',
-      completed: 0,
-      total: zips.length,
-    });
+    setCloudRun(false);
+    if (!append) resetLibraryState();
     try {
-      const unpacked = await filesFromTakeoutZips(
-        zips.map((item) => item.file),
-        setProgress,
-      );
+      let incoming = rest;
+      if (zips.length) {
+        setProgress({
+          phase: 'Reading Takeout ZIP files…',
+          completed: 0,
+          total: zips.length,
+        });
+        const unpacked = await filesFromTakeoutZips(
+          zips.map((item) => item.file),
+          setProgress,
+        );
+        if (id !== ingestId.current) return;
+        setSource('google');
+        incoming = [...rest, ...unpacked];
+      }
+      if (!incoming.length) {
+        if (zips.length) {
+          setProgress(null);
+          setError('Those ZIP files did not contain supported photos or sidecar files.');
+        }
+        return;
+      }
+      const seen = new Set(seenGalleryKeys.current);
+      const parsed = await parseGalleryItems(incoming, setProgress, seen);
       if (id !== ingestId.current) return;
-      setSource('google');
-      selectFiles([...rest, ...unpacked]);
+      seenGalleryKeys.current = seen;
+      setLibrary((current) => (append ? mergeLibraries(current, parsed.library) : parsed.library));
+      setProgress(null);
+      if (!parsed.added && parsed.skipped) {
+        setError('Those items were already added, or they are not supported photos or videos.');
+      }
     } catch (caught) {
       if (id !== ingestId.current) return;
       setProgress(null);
       setError(
         caught instanceof Error
           ? caught.message
-          : 'The Takeout ZIP files could not be read.',
+          : 'The selected photos could not be read.',
       );
     }
   }
@@ -153,18 +177,21 @@ export default function App() {
         photoRes.arrayBuffer(),
         sidecarRes.text(),
       ]);
-      selectFiles([
-        {
-          file: new File([photoBuf], 'sunset.jpg', { type: 'image/jpeg' }),
-          path: 'sample/sunset.jpg',
-        },
-        {
-          file: new File([sidecarText], 'sunset.jpg.supplemental-metadata.json', {
-            type: 'application/json',
-          }),
-          path: 'sample/sunset.jpg.supplemental-metadata.json',
-        },
-      ]);
+      await ingestFiles(
+        [
+          {
+            file: new File([photoBuf], 'sunset.jpg', { type: 'image/jpeg' }),
+            path: 'sample/sunset.jpg',
+          },
+          {
+            file: new File([sidecarText], 'sunset.jpg.supplemental-metadata.json', {
+              type: 'application/json',
+            }),
+            path: 'sample/sunset.jpg.supplemental-metadata.json',
+          },
+        ],
+        false,
+      );
     } catch {
       setError('The sample photo could not be loaded. Try choosing your own files.');
     }
@@ -212,7 +239,21 @@ export default function App() {
       nextWorker.terminate();
       worker.current = null;
     };
-    nextWorker.postMessage({ files, mode, source });
+    try {
+      nextWorker.postMessage({
+        parsedMedia: JSON.parse(JSON.stringify(library.media)) as StagedLibrary['media'],
+        parsedSidecars: JSON.parse(
+          JSON.stringify(library.sidecars),
+        ) as StagedLibrary['sidecars'],
+        mode,
+        source,
+      });
+    } catch {
+      setError('The selected photos could not be prepared for extraction.');
+      setProgress(null);
+      nextWorker.terminate();
+      worker.current = null;
+    }
   }
 
   function reset() {
@@ -221,13 +262,15 @@ export default function App() {
     ingestAbort.current = null;
     worker.current?.terminate();
     worker.current = null;
-    setFiles([]);
+    seenGalleryKeys.current = new Set();
+    setLibrary(emptyLibrary());
     setResult(null);
     setProgress(null);
     setError(null);
     setCloudRun(false);
     if (folderInput.current) folderInput.current.value = '';
     if (fileInput.current) fileInput.current.value = '';
+    if (galleryInput.current) galleryInput.current.value = '';
     if (zipInput.current) zipInput.current.value = '';
   }
 
@@ -236,6 +279,8 @@ export default function App() {
     ingestAbort.current?.abort();
     const controller = new AbortController();
     ingestAbort.current = controller;
+    seenGalleryKeys.current = new Set();
+    setLibrary(emptyLibrary());
     setError(null);
     setResult(null);
     setCloudRun(true);
@@ -258,7 +303,6 @@ export default function App() {
         controller.signal,
       );
       if (id !== ingestId.current) return;
-      setFiles([]);
       setResult(extracted);
       setProgress(null);
     } catch (caught) {
@@ -305,15 +349,14 @@ export default function App() {
             <div className="eyebrow">Gallery → Dataset</div>
             <h1>Your gallery, in data.</h1>
             <p>
-              Extract EXIF and sidecar metadata from photos, an Apple or Google
-              export folder, or Google Takeout ZIP files. Local files stay in
-              this browser. Drive archives are read in the cloud, not downloaded
-              here.
+              Extract EXIF from your iPhone or Android camera roll, or from an
+              Apple or Google export. Photos stay on this device. Drive archives
+              are read in the cloud, not downloaded here.
             </p>
           </div>
           <div className="steps" aria-label="Three-step process">
             <span className={!progress && !result ? 'active' : ''}>
-              <b>1</b> Select files
+              <b>1</b> Add gallery
             </span>
             <ArrowRight size={14} />
             <span className={progress ? 'active' : ''}>
@@ -331,7 +374,7 @@ export default function App() {
             <div className="panel-pad">
               <div className="panel-title">
                 <h2>
-                  {result ? 'Your dataset is ready' : 'Add photos or an export'}
+                  {result ? 'Your dataset is ready' : 'Add your gallery'}
                 </h2>
                 <span className="tag">APPLE + GOOGLE</span>
               </div>
@@ -347,9 +390,23 @@ export default function App() {
                       directory: '',
                     } as InputHTMLAttributes<HTMLInputElement>)}
                     hidden
-                    onChange={(event) =>
-                      void ingestFiles(folderFiles(event.target.files))
-                    }
+                    onChange={(event) => {
+                      const picked = folderFiles(event.target.files);
+                      event.target.value = '';
+                      void ingestFiles(picked);
+                    }}
+                  />
+                  <input
+                    ref={galleryInput}
+                    type="file"
+                    multiple
+                    accept="image/*,video/*,.heic,.heif"
+                    hidden
+                    onChange={(event) => {
+                      const picked = folderFiles(event.target.files);
+                      event.target.value = '';
+                      void ingestFiles(picked);
+                    }}
                   />
                   <input
                     ref={fileInput}
@@ -357,9 +414,11 @@ export default function App() {
                     multiple
                     accept="image/*,video/*,.heic,.heif,.dng,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.json,.xmp"
                     hidden
-                    onChange={(event) =>
-                      void ingestFiles(folderFiles(event.target.files))
-                    }
+                    onChange={(event) => {
+                      const picked = folderFiles(event.target.files);
+                      event.target.value = '';
+                      void ingestFiles(picked);
+                    }}
                   />
                   <input
                     ref={zipInput}
@@ -367,9 +426,11 @@ export default function App() {
                     multiple
                     accept=".zip,application/zip,application/x-zip-compressed"
                     hidden
-                    onChange={(event) =>
-                      void ingestFiles(folderFiles(event.target.files))
-                    }
+                    onChange={(event) => {
+                      const picked = folderFiles(event.target.files);
+                      event.target.value = '';
+                      void ingestFiles(picked);
+                    }}
                   />
                   <div
                     className={`dropzone ${dragging ? 'drag' : ''}`}
@@ -386,25 +447,35 @@ export default function App() {
                     }}
                     onDragLeave={() => setDragging(false)}
                   >
-                    <FolderUp className="upload-icon" size={64} />
+                    <Smartphone className="upload-icon" size={64} />
                     <h3>
-                      {files.length
-                        ? `${files.length.toLocaleString()} files selected`
-                        : 'Drop photos, an unzipped export, or Takeout ZIP files'}
+                      {counts.media
+                        ? `${counts.media.toLocaleString()} photos and videos ready`
+                        : 'Add your iPhone or Android camera roll'}
                     </h3>
                     <p>
-                      {files.length
-                        ? `${counts.media.toLocaleString()} media · ${counts.sidecars.toLocaleString()} sidecars · ${counts.ignored.toLocaleString()} ignored`
-                        : 'Google Takeout can stay zipped. Keep JSON or XMP sidecars next to photos if you already unzipped. Only headers are read.'}
+                      {counts.media
+                        ? `${counts.sidecars.toLocaleString()} sidecars matched so far. Add another batch, then extract EXIF.`
+                        : 'Safari and Chrome open your Photo Library. Select as many as you can, then tap Add more until the whole gallery is in. Only EXIF headers are read — the photos stay on this phone.'}
                     </p>
                     <div className="chooser-row">
                       <button
                         className="primary"
+                        onClick={() => galleryInput.current?.click()}
+                        disabled={!!progress}
+                        type="button"
+                      >
+                        <Smartphone size={16} />
+                        {counts.media ? 'Add more from camera roll' : 'Add from camera roll'}
+                        <ArrowRight size={17} />
+                      </button>
+                      <button
+                        className="secondary"
                         onClick={() => folderInput.current?.click()}
                         disabled={!!progress}
                         type="button"
                       >
-                        Choose folder <ArrowRight size={17} />
+                        <FolderUp size={16} /> Export folder
                       </button>
                       <button
                         className="secondary"
@@ -412,7 +483,7 @@ export default function App() {
                         disabled={!!progress}
                         type="button"
                       >
-                        <Images size={16} /> Choose photos
+                        <Images size={16} /> Files / sidecars
                       </button>
                       <button
                         className="secondary"
@@ -441,8 +512,9 @@ export default function App() {
                       </button>
                     </div>
                     <span className="subtle">
-                      Local photos stay in this browser. From Google Drive, open
-                      Takeout and select every takeout-*.zip (Shift-click).
+                      iOS and Android cannot grant the whole library in one tap.
+                      Keep adding batches. Desktop users can drop a folder or
+                      Takeout ZIP instead.
                     </span>
                   </div>
 
@@ -606,7 +678,7 @@ export default function App() {
               <span className="subtle">
                 {cloudRun
                   ? 'Drive ZIPs are not downloaded to this computer.'
-                  : 'No installations. Local files are not uploaded.'}
+                  : 'Camera-roll photos stay on this device. Only EXIF is kept.'}
               </span>
               {result ? (
                 <button
@@ -673,8 +745,31 @@ export default function App() {
               </div>
             </section>
             <section className="panel help">
+              <details open>
+                <summary>How do I add my whole camera roll?</summary>
+                <p>
+                  <strong>iPhone:</strong> open this page in Safari. Tap{' '}
+                  <strong>Add from camera roll</strong>. Choose Recents, tap
+                  Select, then tap or drag across photos (HEIC and Live Photos
+                  included). iOS limits how many you can pick at once, so tap{' '}
+                  <strong>Add more from camera roll</strong> and continue until
+                  the count matches your library. Then tap{' '}
+                  <strong>Extract metadata</strong>.
+                </p>
+                <p>
+                  <strong>Android:</strong> open this page in Chrome. Tap{' '}
+                  <strong>Add from camera roll</strong>, pick Gallery / Photos,
+                  and use Select all if your phone shows it. If the picker
+                  stops, tap Add more and continue. Videos and HEIC are
+                  included.
+                </p>
+                <p>
+                  The browser cannot open your library in the background.
+                  Photos never leave this device; only EXIF headers are read.
+                </p>
+              </details>
               <details>
-                <summary>How do I export my photos?</summary>
+                <summary>How do I export from Google or Apple instead?</summary>
                 <p>
                   <strong>Google:</strong> export Google Photos through Takeout
                   and save the archives to Drive. Then use{' '}
@@ -686,13 +781,9 @@ export default function App() {
                   the folder. Keep the JSON sidecar files.
                 </p>
                 <p>
-                  <strong>Apple:</strong> in Photos on Mac, select photos → File
+                  <strong>Apple (Mac):</strong> in Photos, select photos → File
                   → Export → Export Unmodified Original. Enable Export IPTC as
                   XMP.
-                </p>
-                <p>
-                  You can also skip the export and choose individual photos if
-                  you only need EXIF from a few files.
                 </p>
                 <a
                   href="https://takeout.google.com/"
@@ -706,11 +797,11 @@ export default function App() {
           </aside>
         </div>
         <footer className="footer">
-          <span>Built for Apple Photos & Google Takeout exports</span>
+          <span>Built for iPhone, Android, Apple Photos & Google Takeout</span>
           <span>
             {cloudRun
               ? 'Cloud Drive extraction · files stay in Drive'
-              : 'Local extraction · files stay on this computer'}
+              : 'Local extraction · files stay on this device'}
           </span>
         </footer>
       </main>

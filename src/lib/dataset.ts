@@ -221,7 +221,7 @@ export async function createDatasetFromParsed(
 ): Promise<Result> {
   if (!media.length)
     throw new Error(
-      'No supported photos or videos found. Choose photos, an unzipped export folder, or Google Takeout ZIP files.',
+      'No supported photos or videos found. Add photos from your camera roll, an unzipped export folder, or Google Takeout ZIP files.',
     );
   const contributor = crypto.randomUUID();
   const mediaIds = new Map(media.map((f) => [f.path, crypto.randomUUID()]));
@@ -444,7 +444,7 @@ export async function createDataset(
   const sidecarFiles = files.filter(isSidecar);
   if (!mediaFiles.length)
     throw new Error(
-      'No supported photos or videos found. Choose photos, an unzipped export folder, or Google Takeout ZIP files.',
+      'No supported photos or videos found. Add photos from your camera roll, an unzipped export folder, or Google Takeout ZIP files.',
     );
   const total = mediaFiles.length + sidecarFiles.length;
   let completed = 0;

@@ -1,6 +1,6 @@
 # Photo Metadata Collector
 
-A private tool that extracts EXIF and gallery metadata from photos, Apple Photos exports, or Google Photos Takeout folders.
+A private tool that extracts EXIF and gallery metadata from an iPhone or Android camera roll, Apple Photos exports, or Google Photos Takeout folders.
 
 Local photos and ZIP files are read in the browser. **From Google Drive** sends only the selected file IDs and a short-lived Google token to a Cloud Run extractor; the Takeout ZIPs are read from Drive there and are not downloaded to your computer. Only the metadata header of each file is parsed (not the full image). The extractor does not keep the archives after the dataset is built.
 
@@ -8,7 +8,9 @@ Local photos and ZIP files are read in the browser. **From Google Drive** sends 
 
 Source: [github.com/kkam717/gallery-extraction](https://github.com/kkam717/gallery-extraction)
 
-Recipients open the link in a browser, choose photos, an unzipped export folder, or Google Takeout ZIP files. **From Google Drive** processes those ZIPs in the cloud so the browser never downloads the archives. Extract metadata and download a dataset ZIP. They do not need to install anything. A few thousand photos is expected to work. Use **Try a sample** to confirm the tool works before sending your own files.
+Recipients open the link on a phone or computer. On iPhone (Safari) or Android (Chrome), tap **Add from camera roll**, pick as many photos and videos as the picker allows, then **Add more** until the gallery is in. Extract metadata and download a dataset ZIP. Photos stay on the device; only EXIF headers are read.
+
+Desktop users can still choose an unzipped export folder or Google Takeout ZIP files. **From Google Drive** processes those ZIPs in the cloud so the browser never downloads the archives. A few thousand photos is expected to work. Use **Try a sample** to confirm the tool works before sending your own files.
 
 If Takeout split the export into several `takeout-*.zip` parts, select the **Takeout** folder in Drive, then select every ZIP inside it. The extractor unpacks media headers and sidecar JSON inside the archives.
 
