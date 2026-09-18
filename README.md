@@ -10,9 +10,7 @@ Source: [github.com/kkam717/gallery-extraction](https://github.com/kkam717/galle
 
 Recipients open the link on a phone or computer.
 
-On **Android (Chrome)** do not use Google Photos for the whole library — that picker is capped at 100 items. Tap **Add DCIM / Pictures folder** and choose Internal storage → DCIM (then Pictures if needed). Cloud-only Google Photos that were never downloaded to the phone are not in DCIM; those still need Takeout.
-
-On **iPhone (Safari)** tap **Add from camera roll**. Safari is not capped at 100, but there is no “select entire Camera Roll” control, so add from Recents and **Add more** if needed.
+On **Android or iPhone**, tap **From Google Photos**. That opens Google’s own Photos picker (not the 100-item Android file sheet). Select photos, search an album name to take a whole album, tap Done, then **Add more from Google Photos** if needed. Extract reads EXIF in the cloud. Google strips GPS on this path; Takeout keeps location.
 
 Extract metadata and download a dataset ZIP. Photos stay on the device; only EXIF headers are read.
 

@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extractDriveZips, parseExtractRequest } from './extract';
+import { extractGooglePhotos, parsePhotosExtractRequest } from './photos';
 import {
   JOB_ID,
   createJob,
@@ -140,6 +141,22 @@ async function streamJob(job: ExtractJob, req: IncomingMessage, res: ServerRespo
   }
 }
 
+function startPhotosExtract(job: ExtractJob, request: ReturnType<typeof parsePhotosExtractRequest>): void {
+  void extractGooglePhotos(() => job.token, request, (progress) => {
+    setJobProgress(job, progress);
+  })
+    .then((result) => {
+      finishJob(job, result);
+      console.log(`[extract-photos] job ${job.id} done`);
+    })
+    .catch((error: unknown) => {
+      const message =
+        error instanceof Error ? error.message : 'The Google Photos library could not be processed.';
+      console.error(`[extract-photos] job ${job.id} failed`, error);
+      failJob(job, message);
+    });
+}
+
 async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const origin = requestOrigin(req);
   if (req.headers.origin && !origin) {
@@ -151,6 +168,20 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   const job = createJob(token);
   console.log(`[extract] job ${job.id} started`);
   startExtract(job, request);
+  await streamJob(job, req, res);
+}
+
+async function handlePhotosExtract(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const origin = requestOrigin(req);
+  if (req.headers.origin && !origin) {
+    sendJson(res, 403, { message: 'This site is not allowed to use the extractor.' });
+    return;
+  }
+  const token = bearerToken(req);
+  const request = parsePhotosExtractRequest(await readJson(req));
+  const job = createJob(token);
+  console.log(`[extract-photos] job ${job.id} started`);
+  startPhotosExtract(job, request);
   await streamJob(job, req, res);
 }
 
@@ -179,6 +210,10 @@ const server = createServer((req, res) => {
     }
     if (req.method === 'POST' && path === '/extract') {
       await handleExtract(req, res);
+      return;
+    }
+    if (req.method === 'POST' && path === '/extract-photos') {
+      await handlePhotosExtract(req, res);
       return;
     }
     const tokenMatch = /^\/extract\/([^/]+)\/token$/.exec(path);
