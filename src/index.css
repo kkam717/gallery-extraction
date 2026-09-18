@@ -442,6 +442,19 @@ p {
   font-variant-numeric: tabular-nums;
 }
 
+.picker-cap {
+  max-width: 440px;
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  background: #fff7e8;
+  border: 1px solid #f0d7a0;
+  color: #7a5410;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+}
+
 .error {
   background: #fff1ef;
   border: 1px solid #f9c8c2;

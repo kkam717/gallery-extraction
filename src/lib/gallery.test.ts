@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { emptyLibrary, galleryItemKey, mergeLibraries, parseGalleryItems } from './gallery';
+import {
+  ANDROID_PHOTO_PICKER_MAX,
+  emptyLibrary,
+  galleryItemKey,
+  isPhotoPickerCap,
+  mergeLibraries,
+  parseGalleryItems,
+  phonePlatform,
+} from './gallery';
 
 const tinyJpeg = Uint8Array.from(
   Buffer.from(
@@ -37,6 +45,17 @@ describe('phone gallery ingest', () => {
       sidecars: [],
     });
     expect(merged.media.map((file) => file.path)).toEqual(['a.jpg', 'b.jpg']);
+  });
+
+  it('detects Android Chrome and the 100-item Photos picker cap', () => {
+    expect(phonePlatform('Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/129.0.0.0')).toBe(
+      'android',
+    );
+    expect(phonePlatform('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)')).toBe('ios');
+    expect(phonePlatform('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', true)).toBe('ios');
+    expect(phonePlatform('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', false)).toBe('other');
+    expect(isPhotoPickerCap(ANDROID_PHOTO_PICKER_MAX)).toBe(true);
+    expect(isPhotoPickerCap(99)).toBe(false);
   });
 
   it('can JSON-clone parsed EXIF so the worker can assemble the dataset', async () => {

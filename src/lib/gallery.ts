@@ -30,6 +30,25 @@ export function emptyLibrary(): StagedLibrary {
   return { media: [], sidecars: [] };
 }
 
+/** Android Photo Picker / Google Photos in Chrome will not return more than this. */
+export const ANDROID_PHOTO_PICKER_MAX = 100;
+
+export type PhonePlatform = 'ios' | 'android' | 'other';
+
+export function phonePlatform(
+  ua = typeof navigator === 'undefined' ? '' : navigator.userAgent,
+  touchMac = typeof document !== 'undefined' && 'ontouchend' in document,
+): PhonePlatform {
+  if (/Android/i.test(ua)) return 'android';
+  if (/iP(hone|ad|od)/i.test(ua)) return 'ios';
+  if (/Macintosh/i.test(ua) && touchMac) return 'ios';
+  return 'other';
+}
+
+export function isPhotoPickerCap(batchSize: number): boolean {
+  return batchSize >= ANDROID_PHOTO_PICKER_MAX;
+}
+
 function yieldThread(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }

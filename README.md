@@ -8,7 +8,13 @@ Local photos and ZIP files are read in the browser. **From Google Drive** sends 
 
 Source: [github.com/kkam717/gallery-extraction](https://github.com/kkam717/gallery-extraction)
 
-Recipients open the link on a phone or computer. On iPhone (Safari) or Android (Chrome), tap **Add from camera roll**, pick as many photos and videos as the picker allows, then **Add more** until the gallery is in. Extract metadata and download a dataset ZIP. Photos stay on the device; only EXIF headers are read.
+Recipients open the link on a phone or computer.
+
+On **Android (Chrome)** do not use Google Photos for the whole library — that picker is capped at 100 items. Tap **Add DCIM / Pictures folder** and choose Internal storage → DCIM (then Pictures if needed). Cloud-only Google Photos that were never downloaded to the phone are not in DCIM; those still need Takeout.
+
+On **iPhone (Safari)** tap **Add from camera roll**. Safari is not capped at 100, but there is no “select entire Camera Roll” control, so add from Recents and **Add more** if needed.
+
+Extract metadata and download a dataset ZIP. Photos stay on the device; only EXIF headers are read.
 
 Desktop users can still choose an unzipped export folder or Google Takeout ZIP files. **From Google Drive** processes those ZIPs in the cloud so the browser never downloads the archives. A few thousand photos is expected to work. Use **Try a sample** to confirm the tool works before sending your own files.
 
