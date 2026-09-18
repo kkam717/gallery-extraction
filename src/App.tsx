@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type InputHTMLAttributes } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Aperture,
   ArrowRight,
@@ -150,16 +150,29 @@ export default function App() {
         incoming = [...rest, ...unpacked];
       }
       if (!incoming.length) {
+        setProgress(null);
         if (zips.length) {
-          setProgress(null);
           setError('Those ZIP files did not contain supported photos or sidecar files.');
-        } else if (via === 'folder' && android) {
+        } else if (via === 'photos') {
           setError(
-            'No photos found in that folder. Choose Internal storage → DCIM (then Pictures if you have more), not Google Photos.',
+            android
+              ? `Google Photos cancelled that selection. It only allows ${ANDROID_PHOTO_PICKER_MAX} photos and has no Select all. Use Select all in a folder on DCIM instead.`
+              : 'No photos were returned. Try again, or add a folder.',
+          );
+        } else if (via === 'folder' || via === 'files') {
+          setError(
+            android
+              ? 'No photos found. In the file screen choose Files (not Photos), open Internal storage → DCIM, then Select all.'
+              : 'No photos found in that selection.',
           );
         }
         return;
       }
+      setProgress({
+        phase: `Reading ${incoming.length.toLocaleString()} items…`,
+        completed: 0,
+        total: incoming.length,
+      });
       const seen = new Set(seenGalleryKeys.current);
       const parsed = await parseGalleryItems(incoming, setProgress, seen);
       if (id !== ingestId.current) return;
@@ -223,6 +236,15 @@ export default function App() {
     } catch {
       setError('The sample photo could not be loaded. Try choosing your own files.');
     }
+  }
+
+  function bindDirectoryInput(node: HTMLInputElement | null) {
+    folderInput.current = node;
+    if (!node) return;
+    node.multiple = true;
+    node.setAttribute('webkitdirectory', 'webkitdirectory');
+    node.setAttribute('directory', 'directory');
+    (node as HTMLInputElement & { webkitdirectory?: boolean }).webkitdirectory = true;
   }
 
   function extract() {
@@ -380,10 +402,10 @@ export default function App() {
             <h1>Your gallery, in data.</h1>
             <p>
               {android
-                ? 'Google Photos in Chrome stops at 100 items. Add the DCIM folder on this phone instead — that is the camera roll that is actually stored here, with EXIF.'
+                ? 'Tap Select all in a folder and choose DCIM. Sliding one-by-one in Google Photos is capped at 100 and often fails the upload.'
                 : ios
-                  ? 'Safari can keep selecting from your Photo Library with no 100-item cap. Add batches until the count looks right. Photos stay on this iPhone.'
-                  : 'Extract EXIF from your iPhone or Android camera roll, or from an Apple or Google export. Photos stay on this device. Drive archives are read in the cloud, not downloaded here.'}
+                  ? 'In Recents tap Select (top right). iPhone has no true Select all for Camera Roll, so drag across photos or add more batches.'
+                  : 'On Android use Select all in a folder (DCIM). Sliding in Google Photos is capped at 100 and often fails the upload.'}
             </p>
           </div>
           <div className="steps" aria-label="Three-step process">
@@ -414,13 +436,9 @@ export default function App() {
               {!result ? (
                 <>
                   <input
-                    ref={folderInput}
+                    ref={bindDirectoryInput}
                     type="file"
                     multiple
-                    {...({
-                      webkitdirectory: '',
-                      directory: '',
-                    } as InputHTMLAttributes<HTMLInputElement>)}
                     hidden
                     onChange={(event) => {
                       const picked = folderFiles(event.target.files);
@@ -444,7 +462,6 @@ export default function App() {
                     ref={storageInput}
                     type="file"
                     multiple
-                    accept="image/jpeg,image/png,image/heic,image/heif,image/webp,video/mp4,video/quicktime,.jpg,.jpeg,.png,.heic,.heif,.dng,.mp4,.mov,application/octet-stream"
                     hidden
                     onChange={(event) => {
                       const picked = folderFiles(event.target.files);
@@ -496,21 +513,21 @@ export default function App() {
                       {counts.media
                         ? `${counts.media.toLocaleString()} photos and videos ready`
                         : android
-                          ? 'Add the camera folder on this phone'
+                          ? 'Select all in your camera folder'
                           : 'Add your iPhone or Android camera roll'}
                     </h3>
                     <p>
                       {counts.media
                         ? `${counts.sidecars.toLocaleString()} sidecars matched so far. ${
                             pickerCapped
-                              ? `Google Photos capped that batch at ${ANDROID_PHOTO_PICKER_MAX}. Add the DCIM folder, or another Photos batch.`
+                              ? `Google Photos capped that batch at ${ANDROID_PHOTO_PICKER_MAX} and has no Select all. Use the DCIM folder instead.`
                               : 'Add another folder or batch, then extract EXIF.'
                           }`
                         : android
-                          ? `Do not use Google Photos for the whole library — Chrome will only return ${ANDROID_PHOTO_PICKER_MAX} items. Choose Internal storage → DCIM (and Pictures if needed). Only EXIF headers are read.`
+                          ? 'Choose Files (not Photos or Google Photos), open Internal storage → DCIM, then Select all or Use this folder. Sliding in Google Photos stops at 100 and often returns nothing. Only EXIF headers are read.'
                           : ios
                             ? 'Safari opens your Photo Library with no 100-item cap. Select Recents, tap Select, then drag across photos. Add more until the count matches. Photos stay on this iPhone.'
-                            : 'Safari and Chrome open your Photo Library. On Android, add the DCIM folder instead of Google Photos (that picker is capped at 100). Only EXIF headers are read.'}
+                            : 'Safari and Chrome open your Photo Library. On Android, Select all in the DCIM folder — do not slide through Google Photos (capped at 100). Only EXIF headers are read.'}
                     </p>
                     <div className="chooser-row">
                       {android ? (
@@ -521,7 +538,7 @@ export default function App() {
                           type="button"
                         >
                           <FolderUp size={16} />
-                          {counts.media ? 'Add another folder' : 'Add DCIM / Pictures folder'}
+                          {counts.media ? 'Add another folder' : 'Select all — DCIM folder'}
                           <ArrowRight size={17} />
                         </button>
                       ) : (
@@ -537,24 +554,14 @@ export default function App() {
                         </button>
                       )}
                       {android && (
-                        <>
-                          <button
-                            className="secondary"
-                            onClick={() => storageInput.current?.click()}
-                            disabled={!!progress}
-                            type="button"
-                          >
-                            <Images size={16} /> Files: Select all in DCIM
-                          </button>
-                          <button
-                            className="secondary"
-                            onClick={() => galleryInput.current?.click()}
-                            disabled={!!progress}
-                            type="button"
-                          >
-                            <Smartphone size={16} /> Google Photos ({ANDROID_PHOTO_PICKER_MAX} max)
-                          </button>
-                        </>
+                        <button
+                          className="secondary"
+                          onClick={() => storageInput.current?.click()}
+                          disabled={!!progress}
+                          type="button"
+                        >
+                          <Images size={16} /> Select all in Files
+                        </button>
                       )}
                       {!android && (
                         <button
@@ -605,19 +612,18 @@ export default function App() {
                     {pickerCapped && (
                       <p className="picker-cap" role="status">
                         That was a {ANDROID_PHOTO_PICKER_MAX}-item Google Photos
-                        batch — Chrome cannot return more than that from Photos.
-                        You have {counts.media.toLocaleString()} so far. Tap{' '}
-                        <strong>Add DCIM / Pictures folder</strong> for the rest
-                        of the camera roll on this phone, or add another Photos
-                        batch of {ANDROID_PHOTO_PICKER_MAX}.
+                        batch — that sheet has no Select all. You have{' '}
+                        {counts.media.toLocaleString()} so far. Tap{' '}
+                        <strong>Select all — DCIM folder</strong> for the rest
+                        of the camera roll on this phone.
                       </p>
                     )}
                     <span className="subtle">
                       {android
-                        ? 'Cloud-only Google Photos that were never downloaded to this phone are not in DCIM. Those need a Takeout export.'
+                        ? 'If a Photos sheet appears, cancel it and pick Files instead. Cloud-only Google Photos that were never downloaded to this phone are not in DCIM — those need Takeout.'
                         : ios
                           ? 'iPhone Safari does not cap you at 100. There is still no “select entire library” control, so keep adding from Recents.'
-                          : 'Android Google Photos is capped at 100 per tap — use the DCIM folder instead. Desktop users can drop a folder or Takeout ZIP.'}
+                          : 'Android Google Photos is capped at 100 per tap — use Select all in the DCIM folder instead. Desktop users can drop a folder or Takeout ZIP.'}
                     </span>
                   </div>
 
@@ -851,16 +857,17 @@ export default function App() {
               <details open>
                 <summary>How do I add my whole camera roll?</summary>
                 <p>
-                  <strong>Android:</strong> Google Photos in Chrome will not
-                  return more than {ANDROID_PHOTO_PICKER_MAX} items. That is a
-                  phone/OS limit, not this site. Tap{' '}
-                  <strong>Add DCIM / Pictures folder</strong>, then Internal
-                  storage → <code>DCIM</code> (and <code>Pictures</code> if you
-                  also keep photos there). If no folder picker appears, tap{' '}
-                  <strong>Files: Select all in DCIM</strong>, choose{' '}
-                  <strong>Files</strong> not Photos, open Camera, and Select
-                  all. Cloud-only library items that were never downloaded are
-                  not on the phone — export those with Takeout.
+                  <strong>Android:</strong> do not slide through Google Photos.
+                  That picker has no Select all, stops at{' '}
+                  {ANDROID_PHOTO_PICKER_MAX} photos, and often fails the
+                  upload. Tap <strong>Select all — DCIM folder</strong>, choose{' '}
+                  <strong>Files</strong> (not Photos), then Internal storage →{' '}
+                  <code>DCIM</code> and Use this folder. Or tap{' '}
+                  <strong>Select all in Files</strong>, open Camera, and use the
+                  three-dot menu → Select all. Repeat for{' '}
+                  <code>Pictures</code> if you keep photos there. Cloud-only
+                  library items that were never downloaded are not on the phone
+                  — export those with Takeout.
                 </p>
                 <p>
                   <strong>iPhone:</strong> open this page in Safari. Tap{' '}

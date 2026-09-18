@@ -10,7 +10,7 @@ Source: [github.com/kkam717/gallery-extraction](https://github.com/kkam717/galle
 
 Recipients open the link on a phone or computer.
 
-On **Android (Chrome)** do not use Google Photos for the whole library — that picker is capped at 100 items. Tap **Add DCIM / Pictures folder** and choose Internal storage → DCIM (then Pictures if needed). Cloud-only Google Photos that were never downloaded to the phone are not in DCIM; those still need Takeout.
+On **Android (Chrome)** use **Select all** in a folder: tap **Select all — DCIM folder**, choose Files (not Photos / Google Photos), then Internal storage → DCIM. Sliding one-by-one in Google Photos is capped at 100 items and often returns nothing. Cloud-only Google Photos that were never downloaded to the phone are not in DCIM; those still need Takeout.
 
 On **iPhone (Safari)** tap **Add from camera roll**. Safari is not capped at 100, but there is no “select entire Camera Roll” control, so add from Recents and **Add more** if needed.
 

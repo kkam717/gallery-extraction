@@ -4,6 +4,7 @@ import {
   emptyLibrary,
   galleryItemKey,
   isPhotoPickerCap,
+  jsonSafeRecord,
   mergeLibraries,
   parseGalleryItems,
   phonePlatform,
@@ -64,5 +65,43 @@ describe('phone gallery ingest', () => {
     const cloned = JSON.parse(JSON.stringify(library)) as typeof library;
     expect(cloned.media[0]?.path).toBe('roll.jpg');
     expect(cloned.media[0]?.fileBytes).toBe(file.size);
+  });
+
+  it('ingests Android picker files that have a JPEG type but no extension', async () => {
+    const file = new File([tinyJpeg], '1000001234', { type: 'image/jpeg' });
+    const { library, added } = await parseGalleryItems([{ file, path: file.name }]);
+    expect(added).toBe(1);
+    expect(library.media[0]?.path).toBe('1000001234.jpg');
+  });
+
+  it('sniffs JPEG bytes when Android Files omits both the name extension and MIME type', async () => {
+    const file = new File([tinyJpeg], '1000005678', { type: '' });
+    const { library, added } = await parseGalleryItems([{ file, path: file.name }]);
+    expect(added).toBe(1);
+    expect(library.media[0]?.path).toBe('1000005678.jpg');
+  });
+
+  it('keeps reading after one gallery file throws', async () => {
+    const bad = new File([tinyJpeg], 'broken', { type: '' });
+    Object.defineProperty(bad, 'type', {
+      get() {
+        throw new Error('type failed');
+      },
+    });
+    const good = new File([tinyJpeg], 'ok.jpg', { type: 'image/jpeg' });
+    const { library, added, skipped } = await parseGalleryItems([
+      { file: bad, path: bad.name },
+      { file: good, path: good.name },
+    ]);
+    expect(skipped).toBe(1);
+    expect(added).toBe(1);
+    expect(library.media[0]?.path).toBe('ok.jpg');
+  });
+
+  it('makes EXIF JSON-safe so extraction can postMessage it', () => {
+    expect(jsonSafeRecord({ n: 1n, ok: true })).toEqual({ n: '1', ok: true });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(jsonSafeRecord(circular)).toEqual({});
   });
 });
