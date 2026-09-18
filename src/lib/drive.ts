@@ -124,7 +124,7 @@ function loadScript(src: string): Promise<void> {
   });
 }
 
-export async function loadGoogleLibraries(): Promise<GoogleApis> {
+async function loadGoogleLibraries(): Promise<GoogleApis> {
   await Promise.all([loadScript(GIS_SRC), loadScript(GAPI_SRC)]);
   await new Promise<void>((resolve, reject) => {
     if (!window.gapi) {
@@ -139,28 +139,21 @@ export async function loadGoogleLibraries(): Promise<GoogleApis> {
   return window.google;
 }
 
-export function requestAccessToken(
-  google: GoogleApis,
-  prompt?: string,
-  timeoutMs = 0,
-  scope = DRIVE_SCOPE,
-): Promise<string> {
+function requestAccessToken(google: GoogleApis, prompt?: string, timeoutMs = 0): Promise<string> {
   return new Promise((resolve, reject) => {
     const timer =
       timeoutMs > 0
-        ? setTimeout(() => reject(new Error('Google access timed out.')), timeoutMs)
+        ? setTimeout(() => reject(new Error('Google Drive access timed out.')), timeoutMs)
         : undefined;
     const client = google.accounts.oauth2.initTokenClient({
       client_id: clientId(),
-      scope,
+      scope: DRIVE_SCOPE,
       callback: (response) => {
         if (timer) clearTimeout(timer);
         if (response.error || !response.access_token) {
           reject(
             new Error(
-              scope.includes('photospicker')
-                ? 'Google Photos access was not granted. Allow Photos picking to continue.'
-                : 'Google Drive access was not granted. Allow Drive file access to select Takeout ZIPs.',
+              'Google Drive access was not granted. Allow Drive file access to select Takeout ZIPs.',
             ),
           );
           return;
@@ -368,28 +361,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function extractCloudJob(
-  path: string,
+export async function extractDriveZipsRemote(
   token: string,
-  body: unknown,
+  selection: { files: DriveZipRef[]; folders?: DriveZipRef[] },
+  mode: Mode,
+  source: string,
   progress: (update: DriveProgress) => void = () => undefined,
   signal?: AbortSignal,
-  options: { scope?: string; startPhase?: string } = {},
 ): Promise<DriveExtractResult> {
   const api = extractApiUrl();
   if (!api) {
-    throw new Error('Cloud extraction is not configured for this site.');
+    throw new Error('Drive extraction is not configured for this site.');
   }
-  const scope = options.scope || DRIVE_SCOPE;
+  const fileCount = selection.files.length;
   progress({
-    phase: options.startPhase || 'Starting cloud extraction…',
+    phase: selection.folders?.length
+      ? 'Reading the Takeout folder in Drive…'
+      : 'Starting cloud extraction…',
     completed: 0,
-    total: 1,
+    total: fileCount || 1,
   });
   let lastProgress: DriveProgress = {
-    phase: options.startPhase || 'Starting cloud extraction…',
+    phase: 'Starting cloud extraction…',
     completed: 0,
-    total: 1,
+    total: fileCount || 1,
   };
   const report = (update: DriveProgress) => {
     lastProgress = update;
@@ -401,14 +396,14 @@ export async function extractCloudJob(
   const pushToken = async () => {
     if (!jobId || signal?.aborted) return;
     try {
-      const next = await requestAccessToken(google, '', 15_000, scope);
+      const next = await requestAccessToken(google, '', 15_000);
       await fetch(`${api}/extract/${jobId}/token`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${next}` },
         signal,
       });
     } catch {
-      // The current token may still be valid until the next refresh.
+      // The current Drive token may still be valid until the next refresh.
     }
   };
   const rememberJob = (id: string) => {
@@ -425,10 +420,10 @@ export async function extractCloudJob(
       throw new Error('That extract job is no longer available. Start it again.');
     }
     if (!response.ok) {
-      let message = 'The export could not be processed in the cloud.';
+      let message = 'The Drive export could not be processed in the cloud.';
       try {
-        const bodyJson = (await response.json()) as { message?: string };
-        if (bodyJson.message) message = bodyJson.message;
+        const body = (await response.json()) as { message?: string };
+        if (body.message) message = body.message;
       } catch {
         // Keep the generic error when the extractor does not return JSON.
       }
@@ -440,13 +435,18 @@ export async function extractCloudJob(
   let result: DriveExtractResult | null = null;
   try {
     try {
-      result = await openStream(`${api}${path}`, {
+      result = await openStream(`${api}/extract`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          files: selection.files,
+          folders: selection.folders ?? [],
+          mode,
+          source,
+        }),
       });
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -458,7 +458,7 @@ export async function extractCloudJob(
 
     while (!result) {
       if (signal?.aborted) {
-        throw new Error('The extraction was cancelled.');
+        throw new Error('The Drive extraction was cancelled.');
       }
       if (!jobId) {
         throw new Error('The cloud extractor lost its connection. Keep this tab open and try again.');
@@ -486,39 +486,4 @@ export async function extractCloudJob(
   } finally {
     if (refreshTimer) clearInterval(refreshTimer);
   }
-}
-
-export async function extractDriveZipsRemote(
-  token: string,
-  selection: { files: DriveZipRef[]; folders?: DriveZipRef[] },
-  mode: Mode,
-  source: string,
-  progress: (update: DriveProgress) => void = () => undefined,
-  signal?: AbortSignal,
-): Promise<DriveExtractResult> {
-  const fileCount = selection.files.length;
-  progress({
-    phase: selection.folders?.length
-      ? 'Reading the Takeout folder in Drive…'
-      : 'Starting cloud extraction…',
-    completed: 0,
-    total: fileCount || 1,
-  });
-  return extractCloudJob(
-    '/extract',
-    token,
-    {
-      files: selection.files,
-      folders: selection.folders ?? [],
-      mode,
-      source,
-    },
-    progress,
-    signal,
-    {
-      startPhase: selection.folders?.length
-        ? 'Reading the Takeout folder in Drive…'
-        : 'Starting cloud extraction…',
-    },
-  );
 }
